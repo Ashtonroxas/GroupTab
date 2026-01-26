@@ -437,9 +437,9 @@ function App() {
               <div className="mockup-header"><div className="mockup-notch"></div><div className="mockup-title">NYC Trip 🗽</div></div>
               <div className="mockup-body">
                 <div className="mockup-row fade-1"><div className="icon-circle">🍕</div><div className="row-text"><div className="row-title">Joe's Pizza</div><div className="row-sub">Paid by Ashton</div></div><div className="row-price text-red">-$15.00</div></div>
-                <div className="mockup-row fade-2"><div className="icon-circle">🚕</div><div className="row-text"><div className="row-title">Uber to Hotel</div><div className="row-sub">Paid by Sarah</div></div><div className="row-price text-green">+$8.50</div></div>
-                <div className="mockup-row fade-3"><div className="icon-circle">🍸</div><div className="row-text"><div className="row-title">Rooftop Drinks</div><div className="row-sub">Paid by Mike</div></div><div className="row-price text-red">-$22.00</div></div>
-                <div className="mockup-floating-card float-anim"><span>💸 You owe Mike</span><strong>$22.00</strong></div>
+                <div className="mockup-row fade-2"><div className="icon-circle">🚕</div><div className="row-text"><div className="row-title">Uber to Hotel</div><div className="row-sub">Paid by Therese</div></div><div className="row-price text-green">+$8.50</div></div>
+                <div className="mockup-row fade-3"><div className="icon-circle">🍸</div><div className="row-text"><div className="row-title">Rooftop Drinks</div><div className="row-sub">Paid by ElJohn</div></div><div className="row-price text-red">-$22.00</div></div>
+                <div className="mockup-floating-card float-anim"><span>💸 You owe Wes</span><strong>$22.00</strong></div>
               </div>
             </div>
           </div>
@@ -513,7 +513,7 @@ function App() {
                         className="delete-btn" 
                         onClick={(e) => { e.stopPropagation(); setShowBgPicker(showBgPicker === trip.id ? null : trip.id); }}
                       >
-                        🎨
+                        ✏️
                       </button>
                       <button className="delete-btn" onClick={(e) => deleteFolder(e, trip.id)}>✕</button>
                     </div>
@@ -551,7 +551,7 @@ function App() {
                             onChange={(e) => handleFileUpload(e, trip.id)}
                           />
                           <button className="upload-btn" onClick={() => fileInputRef.current.click()}>
-                            📁 Upload from Device
+                            📲 Upload from Device
                           </button>
                         </div>
                       </div>
