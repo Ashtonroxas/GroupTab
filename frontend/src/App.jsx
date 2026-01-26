@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import './App.css'
 
 // --- FIREBASE IMPORTS ---
+// Make sure you have created src/firebase.js with your config!
 import { auth, googleProvider, db } from './firebase'
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
 import { doc, setDoc, onSnapshot } from 'firebase/firestore'
@@ -152,7 +153,7 @@ function App() {
   }
 
   // ==========================================
-  // DATA ACTIONS (With Cloud Saving)
+  // DATA ACTIONS
   // ==========================================
   const createFolder = () => {
     if (!newFolderName.trim()) return
@@ -211,22 +212,19 @@ function App() {
     setView('receipt_editor')
   }
 
-  const calculateTripSettlement = async () => {
-    if (!activeTrip || activeTrip.expenses.length === 0) return
-    setIsLoading(true)
-    try {
-      const response = await fetch('http://127.0.0.1:5000/api/calculate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(activeTrip.expenses)
-      })
-      const data = await response.json()
-      setResults(data)
-    } catch (error) {
-      alert("Error connecting to server")
-    } finally {
-      setIsLoading(false)
-    }
+  // --- REPLACED: SERVERLESS CALCULATION ---
+  const calculateTripSettlement = () => {
+    if (!activeTrip || activeTrip.expenses.length === 0) return;
+    
+    setIsLoading(true);
+    
+    // Simulate a tiny delay so the user sees something happening
+    setTimeout(() => {
+      // Calls the helper function defined at the bottom of this file
+      const settlementPlan = calculateDebts(activeTrip.expenses);
+      setResults(settlementPlan);
+      setIsLoading(false);
+    }, 500); 
   }
 
   // --- BUILDER ACTIONS ---
@@ -312,7 +310,7 @@ function App() {
       return t
     })
     
-    saveToCloud(updatedTrips) // Save to Firebase
+    saveToCloud(updatedTrips)
     
     setActiveLocation(receiptLoc)
     setView('receipt_detail')
@@ -617,6 +615,72 @@ function App() {
 
     </div>
   )
+}
+
+// ============================================
+// SERVERLESS ALGORITHM (REPLACES PYTHON BACKEND)
+// ============================================
+function calculateDebts(expenses) {
+  const balances = {};
+
+  // 1. Calculate Net Balances
+  expenses.forEach(exp => {
+    const amount = exp.amount;
+    const payer = exp.payer;
+    const involved = exp.involved; // Array of names
+    
+    if (!amount || !payer || involved.length === 0) return;
+
+    // Payer gets positive balance (they are owed money)
+    balances[payer] = (balances[payer] || 0) + amount;
+
+    // Consumers get negative balance (they owe money)
+    const splitAmount = amount / involved.length;
+    involved.forEach(person => {
+      balances[person] = (balances[person] || 0) - splitAmount;
+    });
+  });
+
+  // 2. Separate into Debtors and Creditors
+  let debtors = [];
+  let creditors = [];
+
+  Object.entries(balances).forEach(([person, amount]) => {
+    // Round to 2 decimals to avoid floating point errors
+    const net = Math.round(amount * 100) / 100;
+    if (net < -0.01) debtors.push({ person, amount: net });
+    if (net > 0.01) creditors.push({ person, amount: net });
+  });
+
+  // Sort by magnitude to optimize matching
+  debtors.sort((a, b) => a.amount - b.amount);
+  creditors.sort((a, b) => b.amount - a.amount);
+
+  // 3. Match them up
+  const transactions = [];
+  let i = 0; // Iterator for debtors
+  let j = 0; // Iterator for creditors
+
+  while (i < debtors.length && j < creditors.length) {
+    const debtor = debtors[i];
+    const creditor = creditors[j];
+
+    // The amount to settle is the minimum of what's owed vs what's owed TO
+    const amount = Math.min(Math.abs(debtor.amount), creditor.amount);
+
+    // Record the transaction
+    transactions.push(`${debtor.person} owes ${creditor.person} $${amount.toFixed(2)}`);
+
+    // Adjust remaining balances
+    debtor.amount += amount;
+    creditor.amount -= amount;
+
+    // If fully settled, move to next person
+    if (Math.abs(debtor.amount) < 0.01) i++;
+    if (creditor.amount < 0.01) j++;
+  }
+
+  return transactions.length > 0 ? transactions : ["No debts found!"];
 }
 
 export default App
