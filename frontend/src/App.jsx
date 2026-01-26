@@ -91,39 +91,39 @@ function App() {
     return () => unsubscribe()
   }, [])
 
-  // ==========================================
-  // 2. DATABASE SYNC (READ/WRITE)
-  // ==========================================
+
  // ==========================================
   // 2. DATABASE SYNC (READ/WRITE)
   // ==========================================
   useEffect(() => {
     if (user) {
-      // Query the SHARED collection for trips where YOU are in the members array
+      console.log("Listening for trips for user:", user.uid);
       const q = query(collection(db, "shared_trips"), where("members", "array-contains", user.uid));
       
       const unsub = onSnapshot(q, (querySnapshot) => {
         const tripList = [];
+        console.log("Documents found in DB:", querySnapshot.size); // This should not be 0
         querySnapshot.forEach((doc) => {
-          // Spread the data and include the Firestore ID
           tripList.push({ id: doc.id, ...doc.data() });
         });
         setTrips(tripList);
+      }, (error) => {
+        console.error("Snapshot Listener failed:", error);
       });
       return () => unsub();
     }
   }, [user]);
 
-  const saveToCloud = async (updatedTrips) => {
-    setTrips(updatedTrips) 
-    if (user) {
-      try {
-        await setDoc(doc(db, "users", user.uid), { trips: updatedTrips }, { merge: true })
-      } catch (e) {
-        console.error("Error saving to cloud: ", e)
-      }
+  const updateTripInCloud = async (tripId, updatedData) => {
+    if (!user) return;
+    try {
+      const tripRef = doc(db, "shared_trips", tripId);
+      await updateDoc(tripRef, updatedData);
+    } catch (e) {
+      console.error("Error updating trip:", e);
+      alert("Permission denied. Check your rules for shared_trips.");
     }
-  }
+  };
 
   // ==========================================
   // AUTH ACTIONS
@@ -199,7 +199,6 @@ function App() {
   const createFolder = async () => {
     if (!newFolderName.trim()) return;
 
-    // 1. Generate a unique 6-character Invite Code
     const generatedCode = Math.random().toString(36).substring(2, 8).toUpperCase();
 
     const newTrip = {
@@ -208,53 +207,56 @@ function App() {
       themes: {},
       background: '',
       joinCode: generatedCode,
-      ownerUid: user.uid,
-      members: [user.uid] // Start with you as the first member
+      members: [user.uid], // Ensure this is an array
+      createdAt: new Date() // Adding this helps with sorting/indexing
     };
 
     try {
-      // 2. Save to the top-level 'shared_trips' collection
-      await addDoc(collection(db, "shared_trips"), newTrip);
-      
-      // 3. Reset input
+      // We use the generatedCode as the Document ID
+      await setDoc(doc(db, "shared_trips", generatedCode), newTrip);
       setNewFolderName('');
+      console.log("Trip created with ID:", generatedCode);
     } catch (e) {
       console.error("Error creating shared trip: ", e);
-      alert("Permission denied. Check your Firestore rules.");
+      alert("Check your console (F12) for the specific Firebase error.");
     }
   };
 
   const handleJoinTrip = async () => {
-    if (!joinCode.trim()) return;
+    if (!joinCodeInput.trim()) return;
     
-    const formattedCode = joinCode.trim().toUpperCase();
-    const tripRef = doc(db, "trips", formattedCode);
-    
-    try {
-      const tripSnap = await getDoc(tripRef);
-      
-      if (tripSnap.exists()) {
-        // Check if user is already a member to avoid duplicate alerts
-        const currentMembers = tripSnap.data().members || [];
-        if (currentMembers.includes(user.uid)) {
-          alert("You are already in this trip!");
-          return;
-        }
+    const formattedCode = joinCodeInput.trim().toUpperCase();
+    console.log("Searching for code:", formattedCode);
 
+    try {
+      // 1. Query for the document where the 'joinCode' field matches
+      const q = query(
+        collection(db, "shared_trips"), 
+        where("joinCode", "==", formattedCode)
+      );
+      
+      const querySnapshot = await getDocs(q);
+
+      if (!querySnapshot.empty) {
+        // 2. Trip found! Grab the actual Firestore Document ID
+        const tripDoc = querySnapshot.docs[0];
+        const tripRef = doc(db, "shared_trips", tripDoc.id);
+
+        // 3. Add yourself to the members array
         await updateDoc(tripRef, {
           members: arrayUnion(user.uid)
         });
-        
-        setJoinCode('');
+
+        setJoinCodeInput('');
         alert("Successfully joined the trip!");
       } else {
-        alert("Invalid Code. Please check and try again.");
+        alert("Invalid Code. Make sure you typed all 6 characters correctly.");
       }
-    } catch (error) {
-      console.error("Join Error:", error);
-      alert("Could not join trip. This is likely a permission issue with Firebase Rules.");
+    } catch (e) {
+      console.error("Join Error:", e);
+      alert("Permission denied. Check your Firestore rules for 'list' access.");
     }
-  }
+  };
 
   const deleteFolder = async (e, id) => {
     e.stopPropagation(); // Prevents opening the trip while trying to delete it
@@ -275,25 +277,16 @@ function App() {
     }
   };
 
-  const deleteExpense = (expenseId) => {
-    const updatedTrips = trips.map(t => {
-      if (t.id === activeTripId) {
-        return { ...t, expenses: t.expenses.filter(e => e.id !== expenseId) }
-      }
-      return t
-    })
-    saveToCloud(updatedTrips)
-  }
+  const deleteExpense = async (expenseId) => {
+    const updatedExpenses = activeTrip.expenses.filter(e => e.id !== expenseId);
+    await updateTripInCloud(activeTripId, { expenses: updatedExpenses });
+  };
 
   // --- UPDATE TRIP COVER (Dashboard) ---
-  const updateTripBackground = (tripId, bgValue) => {
-    const updatedTrips = trips.map(t => 
-      t.id === tripId ? { ...t, background: bgValue } : t
-    )
-    saveToCloud(updatedTrips)
-    setShowBgPicker(null)
-    setCustomImageUrl('')
-  }
+  const updateTripBackground = async (tripId, bgValue) => {
+    await updateTripInCloud(tripId, { background: bgValue });
+    setShowBgPicker(null);
+  };
 
   // --- FILE UPLOAD HANDLER ---
   const handleFileUpload = (e, tripId) => {
@@ -309,33 +302,19 @@ function App() {
   };
 
   // --- UPDATE RECEIPT THEME (Detail View) ---
-  const updateReceiptTheme = (themeValue) => {
+  const updateReceiptTheme = async (themeValue) => {
     if (!activeTrip || !activeLocation) return;
-    const updatedTrips = trips.map(t => {
-      if (t.id === activeTripId) {
-        return {
-          ...t,
-          themes: { ...(t.themes || {}), [activeLocation]: themeValue }
-        }
-      }
-      return t
-    })
-    saveToCloud(updatedTrips)
-    setShowBgPicker(null) 
-  }
+    const updatedThemes = { ...(activeTrip.themes || {}), [activeLocation]: themeValue };
+    await updateTripInCloud(activeTripId, { themes: updatedThemes });
+    setShowBgPicker(null); 
+  };
 
   // --- EDIT TRIP NAME ---
-  const handleSaveTripName = () => {
-    if (!tempTitle.trim()) {
-      setIsEditingTitle(false)
-      return
-    }
-    const updatedTrips = trips.map(t => 
-      t.id === activeTripId ? { ...t, name: tempTitle } : t
-    )
-    saveToCloud(updatedTrips)
-    setIsEditingTitle(false)
-  }
+  const handleSaveTripName = async () => {
+    if (!tempTitle.trim()) return setIsEditingTitle(false);
+    await updateTripInCloud(activeTripId, { name: tempTitle });
+    setIsEditingTitle(false);
+  };
 
   // --- EDIT SAVED EXPENSE ---
   const editSavedExpense = (expense) => {
@@ -410,22 +389,25 @@ function App() {
     setEditingIndex(index)
   }
 
-  const saveReceiptToTrip = () => {
-    if (!receiptLoc || !receiptPayer) return alert("Enter Location and Payer")
-    if (currentItems.length === 0) return alert("Add items")
+  const saveReceiptToTrip = async () => {
+  if (!receiptLoc || !receiptPayer) return alert("Enter Location and Payer");
+    if (currentItems.length === 0) return alert("Add items");
 
-    const subtotal = currentItems.reduce((sum, item) => sum + item.totalPrice, 0)
-    let taxTotal = parseFloat(receiptTax) || 0
-    let tipTotal = parseFloat(receiptTip) || 0
-    if (taxMode === '%') taxTotal = subtotal * (taxTotal / 100)
-    if (tipMode === '%') tipTotal = subtotal * (tipTotal / 100)
+    // 1. Calculate Math (Tax & Tip)
+    const subtotal = currentItems.reduce((sum, item) => sum + item.totalPrice, 0);
+    let taxTotal = parseFloat(receiptTax) || 0;
+    let tipTotal = parseFloat(receiptTip) || 0;
     
-    const taxRate = subtotal > 0 ? (taxTotal / subtotal) : 0
-    const tipRate = subtotal > 0 ? (tipTotal / subtotal) : 0
+    if (taxMode === '%') taxTotal = subtotal * (taxTotal / 100);
+    if (tipMode === '%') tipTotal = subtotal * (tipTotal / 100);
 
+    const taxRate = subtotal > 0 ? (taxTotal / subtotal) : 0;
+    const tipRate = subtotal > 0 ? (tipTotal / subtotal) : 0;
+
+    // 2. Map items to Expense Objects
     const newExpenses = currentItems.map(item => {
-      const itemTax = item.totalPrice * taxRate
-      const itemTip = item.totalPrice * tipRate
+      const itemTax = item.totalPrice * taxRate;
+      const itemTip = item.totalPrice * tipRate;
       return {
         id: editingTripExpenseId || (Date.now() + Math.random()), 
         item: `${item.qty}x ${item.name}`, 
@@ -439,24 +421,29 @@ function App() {
         originalPrice: item.totalPrice,
         taxShare: itemTax,
         tipShare: itemTip
-      }
-    })
+      };
+    });
 
-    const updatedTrips = trips.map(t => {
-      if (t.id === activeTripId) {
-        let updatedExpenses = t.expenses
-        if (editingTripExpenseId) {
-          updatedExpenses = updatedExpenses.filter(e => e.id !== editingTripExpenseId)
-        }
-        return { ...t, expenses: [...updatedExpenses, ...newExpenses] }
+    // 3. Update the Shared Trip Document
+    try {
+      const tripRef = doc(db, "shared_trips", activeTripId);
+      let finalExpensesList = activeTrip.expenses;
+      
+      if (editingTripExpenseId) {
+        finalExpensesList = finalExpensesList.filter(e => e.id !== editingTripExpenseId);
       }
-      return t
-    })
-    saveToCloud(updatedTrips)
-    setActiveLocation(receiptLoc)
-    setView('receipt_detail')
-    setEditingTripExpenseId(null) 
-  }
+
+      await updateDoc(tripRef, {
+        expenses: [...finalExpensesList, ...newExpenses]
+      });
+
+      setActiveLocation(receiptLoc);
+      setView('receipt_detail');
+      setEditingTripExpenseId(null);
+    } catch (err) {
+      console.error("Save failed:", err);
+    }
+  };
 
   const getBreakdown = (expensesList) => {
     const breakdown = {}
