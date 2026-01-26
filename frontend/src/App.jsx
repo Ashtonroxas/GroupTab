@@ -1,9 +1,17 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import './App.css'
 
+// --- FIREBASE IMPORTS ---
+import { auth, googleProvider, db } from './firebase'
+import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
+import { doc, setDoc, onSnapshot } from 'firebase/firestore'
+
 function App() {
+  // --- USER STATE ---
+  const [user, setUser] = useState(null)
+
   // --- NAVIGATION STATE ---
-  const [view, setView] = useState('dashboard') 
+  const [view, setView] = useState('login') 
   const [activeTripId, setActiveTripId] = useState(null)
   const [activeLocation, setActiveLocation] = useState(null) 
 
@@ -33,6 +41,68 @@ function App() {
   // Results
   const [results, setResults] = useState([])
   const [isLoading, setIsLoading] = useState(false)
+
+  // ==========================================
+  // 1. AUTHENTICATION LISTENER
+  // ==========================================
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      if (currentUser) {
+        setUser(currentUser)
+        setView('dashboard')
+      } else {
+        setUser(null)
+        setView('login')
+        setTrips([]) 
+      }
+    })
+    return () => unsubscribe()
+  }, [])
+
+  // ==========================================
+  // 2. DATABASE SYNC (READ/WRITE)
+  // ==========================================
+  
+  // A. LISTEN to Database
+  useEffect(() => {
+    if (user) {
+      const userDocRef = doc(db, "users", user.uid)
+      const unsub = onSnapshot(userDocRef, (docSnap) => {
+        if (docSnap.exists()) {
+          setTrips(docSnap.data().trips || [])
+        }
+      })
+      return () => unsub()
+    }
+  }, [user])
+
+  // B. WRITE to Database
+  const saveToCloud = async (updatedTrips) => {
+    setTrips(updatedTrips) // Update UI immediately
+    if (user) {
+      try {
+        await setDoc(doc(db, "users", user.uid), { trips: updatedTrips }, { merge: true })
+      } catch (e) {
+        console.error("Error saving to cloud: ", e)
+      }
+    }
+  }
+
+  // ==========================================
+  // AUTH ACTIONS
+  // ==========================================
+  const handleGoogleLogin = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider)
+    } catch (error) {
+      console.error(error)
+      alert("Login failed")
+    }
+  }
+
+  const handleLogout = async () => {
+    await signOut(auth)
+  }
 
   // ==========================================
   // HELPER: GET DATA
@@ -82,7 +152,7 @@ function App() {
   }
 
   // ==========================================
-  // DATA ACTIONS
+  // DATA ACTIONS (With Cloud Saving)
   // ==========================================
   const createFolder = () => {
     if (!newFolderName.trim()) return
@@ -91,14 +161,16 @@ function App() {
       name: newFolderName,
       expenses: []
     }
-    setTrips([...trips, newTrip])
+    const updated = [...trips, newTrip]
+    saveToCloud(updated)
     setNewFolderName('')
   }
 
   const deleteFolder = (e, id) => {
     e.stopPropagation() 
     if (confirm("Delete this entire trip folder?")) {
-      setTrips(trips.filter(t => t.id !== id))
+      const updated = trips.filter(t => t.id !== id)
+      saveToCloud(updated)
     }
   }
 
@@ -109,7 +181,7 @@ function App() {
       }
       return t
     })
-    setTrips(updatedTrips)
+    saveToCloud(updatedTrips)
   }
 
   // --- EDIT SAVED EXPENSE ---
@@ -239,14 +311,14 @@ function App() {
       }
       return t
     })
-    setTrips(updatedTrips)
+    
+    saveToCloud(updatedTrips) // Save to Firebase
     
     setActiveLocation(receiptLoc)
     setView('receipt_detail')
     setEditingTripExpenseId(null) 
   }
 
-  // --- BREAKDOWN GENERATOR (NOW WORKS FOR ANY LIST OF EXPENSES) ---
   const getBreakdown = (expensesList) => {
     const breakdown = {}
     expensesList.forEach(exp => {
@@ -262,7 +334,7 @@ function App() {
         }
         breakdown[person].items.push({ 
           name: exp.item, 
-          location: exp.location, // Added location so you know where it's from
+          location: exp.location, 
           cost: splitPrice 
         })
         breakdown[person].subtotal += splitPrice
@@ -279,16 +351,36 @@ function App() {
   // MAIN RENDER
   // ##########################################
   
+  // --- LOGIN VIEW ---
+  if (view === 'login' || !user) {
+    return (
+      <div className="app-container" style={{display:'flex', justifyContent:'center', alignItems:'center', height:'80vh'}}>
+         <div className="card" style={{maxWidth:'400px', textAlign:'center'}}>
+            <h1 className="hero-title" style={{fontSize:'3rem'}}>GroupTab</h1>
+            <p className="hero-subtitle" style={{opacity:1, fontSize:'1rem'}}>Login to save your trips to the cloud.</p>
+            <button className="btn btn-primary" onClick={handleGoogleLogin} style={{marginTop:'30px'}}>
+               Sign in with Google
+            </button>
+         </div>
+      </div>
+    )
+  }
+
   return (
     <div className="app-container">
       
       {/* HEADER */}
-      {view !== 'dashboard' && (
-        <div style={{marginBottom:'20px', borderBottom:'1px solid #333', paddingBottom:'10px', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-          <h2 style={{margin:0, cursor:'pointer'}} onClick={goHome}>GroupTab 📁</h2>
-          <button className="back-btn" onClick={goHome}>Home</button>
+      <div style={{marginBottom:'20px', borderBottom:'1px solid #333', paddingBottom:'10px', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+        <div style={{display:'flex', alignItems:'center', gap:'15px'}}>
+           <h2 style={{margin:0, cursor:'pointer'}} onClick={goHome}>GroupTab 📁</h2>
+           <span style={{fontSize:'0.8rem', color:'#888'}}>Hi, {user.displayName ? user.displayName.split(' ')[0] : 'User'}</span>
         </div>
-      )}
+        
+        <div style={{display:'flex', gap:'10px'}}>
+           {view !== 'dashboard' && <button className="back-btn" onClick={goHome}>Home</button>}
+           <button className="back-btn" style={{color:'#ff5252'}} onClick={handleLogout}>Logout</button>
+        </div>
+      </div>
       
       {/* ---------------- VIEW 1: DASHBOARD ---------------- */}
       {view === 'dashboard' && (
@@ -364,7 +456,7 @@ function App() {
                  </div>
                )}
 
-               {/* 3. MASTER TRIP BREAKDOWN (Aggregated across all receipts) */}
+               {/* 3. MASTER TRIP BREAKDOWN */}
                {activeTrip.expenses.length > 0 && (
                  <div style={{marginTop:'30px'}}>
                     <h3 style={{marginBottom:'15px', paddingLeft:'10px'}}>Total Trip Breakdown</h3>
@@ -390,7 +482,6 @@ function App() {
                     </div>
                  </div>
                )}
-
             </div>
           </div>
         </div>
