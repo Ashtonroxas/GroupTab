@@ -1,0 +1,258 @@
+:root {
+  --primary: #646cff;
+  --primary-glow: rgba(100, 108, 255, 0.5);
+  --success: #4caf50;
+  --bg-dark: #0f0f0f;
+  --glass-bg: rgba(35, 35, 35, 0.65);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --text-main: #ffffff;
+  --text-muted: #a0a0a0;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  color: var(--text-main);
+  background-color: var(--bg-dark);
+  background-image: 
+    radial-gradient(circle at 10% 20%, rgba(100, 108, 255, 0.15) 0%, transparent 20%),
+    radial-gradient(circle at 90% 80%, rgba(76, 175, 80, 0.1) 0%, transparent 20%);
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+
+.app-container {
+  width: 100%;
+  max-width: 1400px; /* Widened slightly to fit horizontal cards better */
+  margin: 0 auto;
+  padding: 20px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* --- DASHBOARD CENTERING --- */
+.dashboard-centered {
+  width: 100%;
+  max-width: 700px;         
+  margin: 0 auto;           
+  padding-top: 10vh;        
+  display: flex;
+  flex-direction: column;
+  align-items: center;      
+  text-align: center;       
+}
+
+/* --- HERO SECTION --- */
+.hero-container {
+  width: 100%;
+  margin-bottom: 30px;
+  display: flex;
+  flex-direction: column;
+  align-items: center; 
+  text-align: center; 
+}
+
+.hero-title {
+  font-size: 5rem;
+  font-weight: 900;
+  margin: 0;
+  line-height: 1.1;
+  background: linear-gradient(135deg, #ffffff 0%, #646cff 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: slideDownFade 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);
+  width: 100%;
+  text-align: center;
+}
+
+.hero-subtitle {
+  font-size: 1.1rem;
+  color: #a0a0a0;
+  margin-top: 15px;
+  line-height: 1.6;
+  opacity: 0; 
+  animation: fadeInUp 0.8s ease-out 0.3s forwards;
+  width: 100%;
+  max-width: 600px;
+  text-align: center;
+}
+
+/* --- HEADER --- */
+.header-title {
+  font-size: 3rem;
+  font-weight: 800;
+  margin-bottom: 40px;
+  background: linear-gradient(to right, #fff, #646cff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.nav-header {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  margin-bottom: 30px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+
+/* --- LAYOUT GRIDS --- */
+.layout-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 30px;
+}
+
+@media (min-width: 900px) {
+  .layout-grid {
+    grid-template-columns: 1fr 1fr; /* Side by Side */
+    align-items: start;
+    gap: 40px;
+  }
+}
+
+/* --- FOLDER GRID (DASHBOARD) --- */
+.folder-grid {
+  display: flex;              
+  flex-wrap: wrap;            
+  justify-content: center;    
+  gap: 15px;
+  margin-top: 20px;
+  width: 100%;
+}
+
+/* --- CARDS --- */
+.card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--glass-border);
+  border-radius: 24px;
+  padding: 25px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  transition: transform 0.2s, box-shadow 0.2s;
+  margin-bottom: 20px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.create-card-wrapper {
+  width: 100%;
+  max-width: 500px; 
+  margin: 0 auto;
+  opacity: 0;
+  animation: fadeInUp 0.8s ease-out 0.5s forwards;
+}
+
+/* --- FOLDER CARDS --- */
+.folder-card {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  padding: 20px 10px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  position: relative;
+  overflow: hidden;
+  width: 180px;
+  flex: 0 0 auto; 
+}
+
+.folder-card:hover {
+  background: rgba(255, 255, 255, 0.1);
+  transform: translateY(-3px);
+  border-color: #80caff;
+  box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+}
+
+.folder-icon { font-size: 2.2rem; margin-bottom: 8px; display: block; }
+.folder-name { font-size: 1rem; font-weight: bold; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.folder-meta { font-size: 0.75rem; color: #aaa; margin-top: 4px; }
+
+/* --- INPUTS --- */
+.input-group { margin-bottom: 20px; }
+label { display: block; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px; letter-spacing: 1px; }
+input { width: 100%; padding: 14px 16px; background: rgba(0, 0, 0, 0.3); border: 1px solid var(--glass-border); border-radius: 12px; color: white; font-size: 1rem; transition: all 0.3s ease; box-sizing: border-box; }
+input:focus { outline: none; border-color: var(--primary); background: rgba(0, 0, 0, 0.5); box-shadow: 0 0 15px var(--primary-glow); }
+input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+input[type=number] { -moz-appearance: textfield; }
+
+/* --- BUTTONS --- */
+.btn { width: 100%; padding: 16px; border: none; border-radius: 12px; font-size: 1rem; font-weight: 700; cursor: pointer; transition: all 0.2s; text-transform: uppercase; letter-spacing: 0.5px; }
+.btn-primary { background: linear-gradient(135deg, #646cff 0%, #4b55ff 100%); color: white; box-shadow: 0 4px 15px var(--primary-glow); }
+.btn-primary:hover { transform: translateY(-2px); box-shadow: 0 6px 20px var(--primary-glow); }
+.back-btn { background: rgba(255,255,255,0.1); border: none; color: #fff; padding: 8px 15px; border-radius: 8px; cursor: pointer; font-weight: bold; }
+.back-btn:hover { background: rgba(255,255,255,0.2); }
+.delete-btn { background: transparent; border: none; color: #ff5252; cursor: pointer; opacity: 0.5; transition: opacity 0.2s; padding: 10px; font-size: 1.2rem; }
+.delete-btn:hover { opacity: 1; }
+
+/* --- ITEMS LIST (VERTICAL ON LEFT) --- */
+.items-grid {
+  display: flex;
+  flex-direction: column; /* Vertical Stack */
+  gap: 10px;
+  width: 100%;
+}
+
+.expense-box {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 15px;
+  display: flex;
+  justify-content: space-between; 
+  align-items: center;
+  transition: all 0.2s;
+}
+
+.expense-box:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: #80caff;
+  transform: translateX(5px);
+}
+
+.expense-box-footer {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+/* --- BREAKDOWN GRID (HORIZONTAL ON RIGHT) --- */
+.breakdown-grid {
+  display: flex;
+  flex-wrap: wrap; /* Side by Side */
+  gap: 15px;
+  align-items: flex-start;
+}
+
+.spreadsheet-card {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  width: 260px; /* Fixed width so they fit horizontally */
+  flex-shrink: 0;
+}
+
+.spreadsheet-header { background: rgba(100, 108, 255, 0.2); padding: 10px 15px; font-weight: bold; text-align: center; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
+.spreadsheet-body { padding: 15px; flex-grow: 1; }
+.line-item { display: flex; justify-content: space-between; font-size: 0.9rem; margin-bottom: 8px; color: #ddd; border-bottom: 1px dashed rgba(255,255,255,0.1); padding-bottom: 4px; }
+.spreadsheet-footer { background: rgba(0, 0, 0, 0.2); padding: 15px; border-top: 1px solid rgba(255, 255, 255, 0.1); }
+.summary-row { display: flex; justify-content: space-between; font-size: 0.9rem; margin-bottom: 4px; color: #aaa; }
+.grand-total-row { display: flex; justify-content: space-between; background: #ffeb3b; color: #000; padding: 8px 10px; border-radius: 4px; font-weight: bold; margin-top: 10px; font-size: 1.1rem; }
+
+/* --- SETTLEMENTS --- */
+.settlement-card { background: linear-gradient(145deg, rgba(76, 175, 80, 0.1), rgba(0, 0, 0, 0)); border: 1px solid rgba(76, 175, 80, 0.3); margin-top: 30px; animation: popUp 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+.settlement-row { padding: 15px; font-size: 1.1rem; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+
+/* --- ANIMATIONS --- */
+@keyframes slideIn { from { opacity: 0; transform: translateX(-20px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes slideDownFade { from { opacity: 0; transform: translateY(-30px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes popUp { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: scale(1); } }
