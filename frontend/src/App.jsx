@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react'
 import './App.css'
 
 // --- FIREBASE IMPORTS ---
-// Make sure you have created src/firebase.js with your config!
 import { auth, googleProvider, db } from './firebase'
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
 import { doc, setDoc, onSnapshot } from 'firebase/firestore'
@@ -212,7 +211,7 @@ function App() {
     setView('receipt_editor')
   }
 
-  // --- REPLACED: SERVERLESS CALCULATION ---
+  // --- SERVERLESS CALCULATION (No Python Needed) ---
   const calculateTripSettlement = () => {
     if (!activeTrip || activeTrip.expenses.length === 0) return;
     
@@ -220,7 +219,6 @@ function App() {
     
     // Simulate a tiny delay so the user sees something happening
     setTimeout(() => {
-      // Calls the helper function defined at the bottom of this file
       const settlementPlan = calculateDebts(activeTrip.expenses);
       setResults(settlementPlan);
       setIsLoading(false);
@@ -352,31 +350,35 @@ function App() {
   // --- LOGIN VIEW ---
   if (view === 'login' || !user) {
     return (
-      <div className="app-container" style={{display:'flex', justifyContent:'center', alignItems:'center', height:'80vh'}}>
-         <div className="card" style={{maxWidth:'400px', textAlign:'center'}}>
-            <h1 className="hero-title" style={{fontSize:'3rem'}}>GroupTab</h1>
-            <p className="hero-subtitle" style={{opacity:1, fontSize:'1rem'}}>Login to save your trips to the cloud.</p>
-            <button className="btn btn-primary" onClick={handleGoogleLogin} style={{marginTop:'30px'}}>
-               Sign in with Google
+      <div className="app-container" style={{display:'flex', justifyContent:'center', alignItems:'center', minHeight:'100vh'}}>
+         <div className="card dashboard-centered" style={{padding:'60px 40px', maxWidth:'450px'}}>
+            <div style={{fontSize:'4rem', marginBottom:'20px'}}>✨</div>
+            <h1 className="hero-title" style={{fontSize:'3.5rem'}}>GroupTab</h1>
+            <p className="hero-subtitle">
+              The modern way to track expenses and split bills with friends. Simple, fast, and transparent.
+            </p>
+            <button className="btn btn-primary" onClick={handleGoogleLogin} style={{width:'100%', marginTop:'20px', fontSize:'1.1rem'}}>
+               <span style={{marginRight:'10px'}}>G</span> Continue with Google
             </button>
          </div>
       </div>
     )
   }
 
+  // --- AUTHENTICATED APP ---
   return (
     <div className="app-container">
       
       {/* HEADER */}
-      <div style={{marginBottom:'20px', borderBottom:'1px solid #333', paddingBottom:'10px', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+      <div style={{marginBottom:'20px', borderBottom:'1px solid var(--glass-border)', paddingBottom:'10px', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
         <div style={{display:'flex', alignItems:'center', gap:'15px'}}>
-           <h2 style={{margin:0, cursor:'pointer'}} onClick={goHome}>GroupTab 📁</h2>
-           <span style={{fontSize:'0.8rem', color:'#888'}}>Hi, {user.displayName ? user.displayName.split(' ')[0] : 'User'}</span>
+           <h2 className="header-title" style={{margin:0, fontSize:'1.8rem', cursor:'pointer'}} onClick={goHome}>GroupTab 📁</h2>
+           <span style={{fontSize:'0.8rem', color:'var(--text-muted)'}}>Hi, {user.displayName ? user.displayName.split(' ')[0] : 'User'}</span>
         </div>
         
         <div style={{display:'flex', gap:'10px'}}>
            {view !== 'dashboard' && <button className="back-btn" onClick={goHome}>Home</button>}
-           <button className="back-btn" style={{color:'#ff5252'}} onClick={handleLogout}>Logout</button>
+           <button className="back-btn" style={{color:'var(--danger)'}} onClick={handleLogout}>Logout</button>
         </div>
       </div>
       
@@ -396,7 +398,7 @@ function App() {
           </div>
           {trips.length > 0 && (
             <div style={{width:'100%', marginTop:'40px'}}>
-              <h4 style={{color:'#666', borderBottom:'1px solid #333', paddingBottom:'10px', textAlign:'center'}}>Your Trips</h4>
+              <h4 style={{color:'var(--text-muted)', borderBottom:'1px solid var(--glass-border)', paddingBottom:'10px', textAlign:'center'}}>Your Trips</h4>
               <div className="folder-grid">
                 {trips.map(trip => (
                   <div key={trip.id} className="folder-card" onClick={() => openTrip(trip.id)}>
@@ -422,14 +424,14 @@ function App() {
             <div>
               <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'15px'}}>
                  <h2 style={{margin:0}}>Receipts</h2>
-                 <button className="btn btn-primary" style={{width:'auto', padding:'8px 15px'}} onClick={openReceiptBuilder}>+ Add New</button>
+                 <button className="btn btn-primary" style={{width:'auto', padding:'10px 20px'}} onClick={openReceiptBuilder}>+ Add New</button>
               </div>
-              {tripLocations.length === 0 && <div style={{color:'#666', padding:'20px', border:'1px dashed #444', borderRadius:'10px'}}>No receipts yet.</div>}
-              <div className="folder-grid" style={{gridTemplateColumns:'repeat(auto-fit, minmax(150px, 1fr))'}}>
+              {tripLocations.length === 0 && <div style={{color:'var(--text-muted)', padding:'20px', border:'1px dashed var(--glass-border)', borderRadius:'10px'}}>No receipts yet.</div>}
+              <div className="folder-grid" style={{justifyContent:'flex-start'}}>
                 {tripLocations.map(loc => (
                   <div key={loc} className="folder-card" style={{padding:'20px'}} onClick={() => openLocationTab(loc)}>
                     <span style={{fontSize:'2rem'}}>🧾</span>
-                    <div style={{fontWeight:'bold', marginTop:'5px'}}>{loc}</div>
+                    <div style={{fontWeight:'bold', marginTop:'5px', color:'white'}}>{loc}</div>
                   </div>
                 ))}
               </div>
@@ -440,7 +442,7 @@ function App() {
                {/* 1. FINAL SETTLEMENT CARD */}
                <div className="card">
                  <h2 style={{marginTop:0}}>Final Settlement</h2>
-                 <p style={{fontSize:'0.9rem', color:'#aaa'}}>Calculates net debts across ALL receipts (Deducts who paid what).</p>
+                 <p style={{fontSize:'0.9rem', color:'var(--text-muted)'}}>Calculates net debts across ALL receipts (Deducts who paid what).</p>
                  <button className="btn btn-primary" onClick={calculateTripSettlement} disabled={isLoading || activeTrip.expenses.length === 0}>
                    {isLoading ? 'Calculating...' : 'Calculate Who Owes Who'}
                  </button>
@@ -449,7 +451,7 @@ function App() {
                {/* 2. RESULTS DISPLAY */}
                {results.length > 0 && (
                  <div className="card settlement-card">
-                   <h2 style={{marginTop:0, color:'#4caf50'}}>Who Owes Who?</h2>
+                   <h2 style={{marginTop:0, color:'var(--success)'}}>Who Owes Who?</h2>
                    {results.map((line, idx) => <div key={idx} className="settlement-row">✅ {line}</div>)}
                  </div>
                )}
@@ -465,7 +467,7 @@ function App() {
                           <div className="spreadsheet-body">
                             {data.items.map((i, idx) => (
                                <div key={idx} className="line-item">
-                                 <span>{i.name} <span style={{fontSize:'0.7rem', color:'#888'}}>({i.location})</span></span>
+                                 <span>{i.name} <span style={{fontSize:'0.7rem', color:'var(--text-muted)'}}>({i.location})</span></span>
                                  <span>{i.cost.toFixed(2)}</span>
                                </div>
                             ))}
@@ -502,22 +504,22 @@ function App() {
                 {locationExpenses.map(exp => (
                   <div key={exp.id} className="expense-box">
                     <div>
-                      <div style={{fontWeight:'bold', fontSize:'1rem'}}>{exp.item}</div>
-                      <div style={{fontSize:'0.8rem', color:'#888'}}>
-                        Shared by: <span style={{color:'#ccc'}}>{exp.involved.join(', ')}</span>
+                      <div style={{fontWeight:'bold', fontSize:'1rem', color:'white'}}>{exp.item}</div>
+                      <div style={{fontSize:'0.8rem', color:'var(--text-muted)'}}>
+                        Shared by: <span style={{color:'white'}}>{exp.involved.join(', ')}</span>
                       </div>
                     </div>
 
-                    <div className="expense-box-footer">
-                       <span style={{color:'#4caf50', fontWeight:'bold', fontSize:'1.1rem'}}>${exp.amount.toFixed(2)}</span>
+                    <div className="expense-box-footer" style={{display:'flex', alignItems:'center', gap:'15px'}}>
+                       <span style={{color:'var(--success)', fontWeight:'bold', fontSize:'1.1rem'}}>${exp.amount.toFixed(2)}</span>
                        <div style={{display:'flex', gap:'10px'}}>
                           <span style={{cursor:'pointer', fontSize:'1.2rem'}} onClick={() => editSavedExpense(exp)}>✎</span>
-                          <span style={{cursor:'pointer', fontSize:'1.2rem', color:'#ff5252'}} onClick={() => deleteExpense(exp.id)}>✕</span>
+                          <span style={{cursor:'pointer', fontSize:'1.2rem', color:'var(--danger)'}} onClick={() => deleteExpense(exp.id)}>✕</span>
                        </div>
                     </div>
                   </div>
                 ))}
-                {locationExpenses.length === 0 && <div style={{color:'#666', textAlign:'center', fontStyle:'italic', padding:'20px'}}>No items added yet.</div>}
+                {locationExpenses.length === 0 && <div style={{color:'var(--text-muted)', textAlign:'center', fontStyle:'italic', padding:'20px'}}>No items added yet.</div>}
               </div>
             </div>
 
@@ -553,11 +555,11 @@ function App() {
           <button className="back-btn" onClick={() => setView('trip_view')} style={{marginBottom:'20px'}}>Cancel</button>
           
           <div className="card">
-            <h2 style={{marginTop:0, color:'#80caff'}}>
+            <h2 style={{marginTop:0, color:'var(--primary)'}}>
               {editingTripExpenseId ? `Edit Item in ${receiptLoc}` : "New Receipt"}
             </h2>
             
-            <div className="input-row" style={{display:'flex', gap:'15px'}}>
+            <div className="input-row" style={{display:'flex', gap:'15px', marginBottom:'15px'}}>
                <div className="input-group" style={{flex:1}}>
                  <label>Location</label>
                  <input placeholder="e.g. Cowfish" value={receiptLoc} onChange={e => setReceiptLoc(e.target.value)} />
@@ -568,17 +570,18 @@ function App() {
                </div>
             </div>
 
-            <div style={{background:'rgba(255,255,255,0.05)', padding:'15px', borderRadius:'10px', marginBottom:'20px', border: editingIndex !== null ? '1px solid #4caf50' : 'none'}}>
+            <div style={{background:'rgba(255,255,255,0.05)', padding:'20px', borderRadius:'16px', marginBottom:'20px', border: editingIndex !== null ? '1px solid var(--success)' : '1px solid var(--glass-border)'}}>
                <div className="input-row" style={{display:'flex', gap:'10px'}}>
                   <div style={{flex:0.8}}><label style={{fontSize:'0.7rem'}}>Qty</label><input type="number" value={quantity} onChange={e => setQuantity(e.target.value)} style={{textAlign:'center'}}/></div>
-                  <div style={{flex:2}}><label style={{fontSize:'0.7rem'}}>Item</label><input placeholder="Item" value={itemName} onChange={e => setItemName(e.target.value)} /></div>
+                  <div style={{flex:2}}><label style={{fontSize:'0.7rem'}}>Item</label><input placeholder="Item Name" value={itemName} onChange={e => setItemName(e.target.value)} /></div>
                   <div style={{flex:1.2}}><label style={{fontSize:'0.7rem'}}>Price</label><input type="number" placeholder="0.00" value={unitPrice} onChange={e => setUnitPrice(e.target.value)} /></div>
                </div>
-               <div className="input-group" style={{marginTop:'10px'}}>
-                 <input placeholder="Consumers (e.g. Ashton, Bob)" value={itemConsumer} onChange={e => setItemConsumer(e.target.value)} />
+               <div className="input-group" style={{marginTop:'15px'}}>
+                 <label style={{fontSize:'0.7rem'}}>Consumers</label>
+                 <input placeholder="Who ate this? (e.g. Ashton, Bob)" value={itemConsumer} onChange={e => setItemConsumer(e.target.value)} />
                </div>
-               <div style={{marginTop:'10px', display:'flex', gap:'10px'}}>
-                  <button className="btn btn-primary" style={{padding:'10px', fontSize:'0.9rem', background: editingIndex!==null?'#4caf50':''}} onClick={handleAddOrUpdateItem}>
+               <div style={{marginTop:'15px', display:'flex', gap:'10px'}}>
+                  <button className="btn btn-primary" style={{padding:'12px', fontSize:'0.9rem', background: editingIndex!==null?'var(--success)':'', width:'auto'}} onClick={handleAddOrUpdateItem}>
                     {editingIndex!==null ? 'Update Item' : '+ Add Item'}
                   </button>
                </div>
@@ -587,26 +590,26 @@ function App() {
             {currentItems.length > 0 && (
               <ul style={{paddingLeft:0, listStyle:'none', marginBottom:'20px'}}>
                 {currentItems.map((item, idx) => (
-                  <li key={idx} style={{background:'rgba(255,255,255,0.05)', padding:'10px', marginBottom:'5px', borderRadius:'8px', display:'flex', justifyContent:'space-between'}}>
-                    <div>{item.qty}x {item.name} (${item.totalPrice.toFixed(2)})</div>
-                    <div style={{cursor:'pointer'}} onClick={()=>startEditingDraftItem(idx)}>✎</div>
+                  <li key={idx} style={{background:'rgba(255,255,255,0.05)', padding:'12px', marginBottom:'8px', borderRadius:'8px', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                    <div><span style={{fontWeight:'bold'}}>{item.qty}x {item.name}</span> <span style={{color:'var(--text-muted)'}}>(${item.totalPrice.toFixed(2)})</span></div>
+                    <div style={{cursor:'pointer', padding:'5px'}} onClick={()=>startEditingDraftItem(idx)}>✎</div>
                   </li>
                 ))}
               </ul>
             )}
 
-            <div className="input-row" style={{display:'flex', gap:'15px'}}>
+            <div className="input-row" style={{display:'flex', gap:'15px', marginTop:'20px'}}>
                <div className="input-group" style={{flex:1}}>
-                  <div style={{display:'flex', justifyContent:'space-between'}}><label>Tax</label><span onClick={()=>setTaxMode(taxMode==='$'?'%':'$')} style={{color:'#80caff', cursor:'pointer'}}>{taxMode}</span></div>
+                  <div style={{display:'flex', justifyContent:'space-between', marginBottom:'5px'}}><label>Tax</label><span onClick={()=>setTaxMode(taxMode==='$'?'%':'$')} style={{color:'var(--primary)', cursor:'pointer', fontWeight:'bold'}}>{taxMode}</span></div>
                   <input type="number" value={receiptTax} onChange={e => setReceiptTax(e.target.value)} />
                </div>
                <div className="input-group" style={{flex:1}}>
-                  <div style={{display:'flex', justifyContent:'space-between'}}><label>Tip</label><span onClick={()=>setTipMode(tipMode==='$'?'%':'$')} style={{color:'#80caff', cursor:'pointer'}}>{tipMode}</span></div>
+                  <div style={{display:'flex', justifyContent:'space-between', marginBottom:'5px'}}><label>Tip</label><span onClick={()=>setTipMode(tipMode==='$'?'%':'$')} style={{color:'var(--primary)', cursor:'pointer', fontWeight:'bold'}}>{tipMode}</span></div>
                   <input type="number" value={receiptTip} onChange={e => setReceiptTip(e.target.value)} />
                </div>
             </div>
 
-            <button className="btn btn-primary" style={{marginTop:'20px'}} onClick={saveReceiptToTrip}>
+            <button className="btn btn-primary" style={{marginTop:'30px'}} onClick={saveReceiptToTrip}>
               {editingTripExpenseId ? "Save Changes" : "Save Receipt"}
             </button>
           </div>
@@ -618,7 +621,7 @@ function App() {
 }
 
 // ============================================
-// SERVERLESS ALGORITHM (REPLACES PYTHON BACKEND)
+// SERVERLESS ALGORITHM
 // ============================================
 function calculateDebts(expenses) {
   const balances = {};
@@ -627,14 +630,11 @@ function calculateDebts(expenses) {
   expenses.forEach(exp => {
     const amount = exp.amount;
     const payer = exp.payer;
-    const involved = exp.involved; // Array of names
+    const involved = exp.involved; 
     
     if (!amount || !payer || involved.length === 0) return;
 
-    // Payer gets positive balance (they are owed money)
     balances[payer] = (balances[payer] || 0) + amount;
-
-    // Consumers get negative balance (they owe money)
     const splitAmount = amount / involved.length;
     involved.forEach(person => {
       balances[person] = (balances[person] || 0) - splitAmount;
@@ -646,36 +646,29 @@ function calculateDebts(expenses) {
   let creditors = [];
 
   Object.entries(balances).forEach(([person, amount]) => {
-    // Round to 2 decimals to avoid floating point errors
     const net = Math.round(amount * 100) / 100;
     if (net < -0.01) debtors.push({ person, amount: net });
     if (net > 0.01) creditors.push({ person, amount: net });
   });
 
-  // Sort by magnitude to optimize matching
   debtors.sort((a, b) => a.amount - b.amount);
   creditors.sort((a, b) => b.amount - a.amount);
 
   // 3. Match them up
   const transactions = [];
-  let i = 0; // Iterator for debtors
-  let j = 0; // Iterator for creditors
+  let i = 0; 
+  let j = 0; 
 
   while (i < debtors.length && j < creditors.length) {
     const debtor = debtors[i];
     const creditor = creditors[j];
-
-    // The amount to settle is the minimum of what's owed vs what's owed TO
     const amount = Math.min(Math.abs(debtor.amount), creditor.amount);
 
-    // Record the transaction
     transactions.push(`${debtor.person} owes ${creditor.person} $${amount.toFixed(2)}`);
 
-    // Adjust remaining balances
     debtor.amount += amount;
     creditor.amount -= amount;
 
-    // If fully settled, move to next person
     if (Math.abs(debtor.amount) < 0.01) i++;
     if (creditor.amount < 0.01) j++;
   }
