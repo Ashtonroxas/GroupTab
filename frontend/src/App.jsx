@@ -284,8 +284,14 @@ function App() {
 
   // --- UPDATE TRIP COVER (Dashboard) ---
   const updateTripBackground = async (tripId, bgValue) => {
-    await updateTripInCloud(tripId, { background: bgValue });
-    setShowBgPicker(null);
+    try {
+      const tripRef = doc(db, "shared_trips", tripId);
+      await updateDoc(tripRef, { background: bgValue });
+      setShowBgPicker(null);
+    } catch (e) {
+      console.error("Photo Update Error:", e);
+      alert("Permission denied. Ensure you are a member of this trip.");
+    }
   };
 
   // --- FILE UPLOAD HANDLER ---
