@@ -575,7 +575,7 @@ function App() {
           <div className="trips-section">
             <h3 className="section-title">Your Trips🗺️</h3>
             {trips.length === 0 ? (
-              <div className="empty-state"><div className="empty-icon"></div><p>No trips yet🗺️. Type a destination above to get started!</p></div>
+              <div className="empty-state"><div className="empty-icon"></div><p>No trips yet. Type a destination above to get started!</p></div>
             ) : (
               <div className="folder-grid">
                 {trips.map(trip => (
@@ -586,7 +586,7 @@ function App() {
                     style={trip.background ? {backgroundImage: trip.background, backgroundSize: 'cover', backgroundPosition: 'center'} : {}}
                   >
                     <div className="folder-content" style={trip.background ? {textShadow: '0 2px 4px rgba(0,0,0,0.8)'} : {}}>
-                      <span className="folder-icon" style={trip.background ? {filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.8))'} : {}}>🏝️</span>
+                      <span className="folder-icon" style={trip.background ? {filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.8))'} : {}}></span>
                       <div className="folder-info">
                         <div className="folder-name">{trip.name}</div>
                         <div className="folder-meta" style={trip.background ? {color:'rgba(255,255,255,0.9)'} : {}}>{trip.expenses.length} expenses</div>
