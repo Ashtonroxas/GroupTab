@@ -289,15 +289,25 @@ function App() {
       await updateDoc(tripRef, { background: bgValue });
       setShowBgPicker(null);
     } catch (e) {
-      console.error("Photo Update Error:", e);
-      alert("Permission denied. Ensure you are a member of this trip.");
+      console.error("Update Error:", e);
+      // If the error message mentions "packet too large" or "size limit", 
+      // it's the 1MB Firestore limit.
+      alert("Could not update background. The image might be too large.");
     }
   };
 
   // --- FILE UPLOAD HANDLER ---
   const handleFileUpload = (e, tripId) => {
     const file = e.target.files[0];
+    
     if (file) {
+      // Firestore limit check (1MB = 1,048,576 bytes)
+      // We aim for 500KB to be safe because Base64 encoding adds ~33% size
+      if (file.size > 500000) { 
+        alert("Image is too large! Please choose a file smaller than 500KB.");
+        return;
+      }
+
       const reader = new FileReader();
       reader.onloadend = () => {
         // Reader result is the Base64 string
