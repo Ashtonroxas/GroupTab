@@ -224,39 +224,37 @@ function App() {
     }
   };
 
-  const handleJoinTrip = async (code) => {
-    if (!code.trim()) return alert("Please enter a code!");
-    setIsLoading(true);
-
+  const handleJoinTrip = async () => {
+    if (!joinCode.trim()) return;
+    
+    const formattedCode = joinCode.trim().toUpperCase();
+    const tripRef = doc(db, "trips", formattedCode);
+    
     try {
-      // 1. Search 'shared_trips' for a matching joinCode
-      const q = query(collection(db, "shared_trips"), where("joinCode", "==", code.toUpperCase().trim()));
-      const querySnapshot = await getDocs(q);
+      const tripSnap = await getDoc(tripRef);
+      
+      if (tripSnap.exists()) {
+        // Check if user is already a member to avoid duplicate alerts
+        const currentMembers = tripSnap.data().members || [];
+        if (currentMembers.includes(user.uid)) {
+          alert("You are already in this trip!");
+          return;
+        }
 
-      if (querySnapshot.empty) {
-        alert("Invalid Code! Double-check the code with your friend.");
-        setIsLoading(false);
-        return;
+        await updateDoc(tripRef, {
+          members: arrayUnion(user.uid)
+        });
+        
+        setJoinCode('');
+        alert("Successfully joined the trip!");
+      } else {
+        alert("Invalid Code. Please check and try again.");
       }
-
-      // 2. Get the specific trip document ID
-      const tripDoc = querySnapshot.docs[0];
-      const tripRef = doc(db, "shared_trips", tripDoc.id);
-
-      // 3. Add your User ID to the members array
-      await updateDoc(tripRef, {
-        members: arrayUnion(user.uid)
-      });
-
-      setJoinCodeInput(''); // Clear the input
-      alert("Trip joined successfully!");
     } catch (error) {
       console.error("Join Error:", error);
-      alert("Could not join the trip. Check your connection.");
-    } finally {
-      setIsLoading(false);
+      alert("Could not join trip. This is likely a permission issue with Firebase Rules.");
     }
-  };
+  }
 
   const deleteFolder = async (e, id) => {
     e.stopPropagation(); // Prevents opening the trip while trying to delete it
