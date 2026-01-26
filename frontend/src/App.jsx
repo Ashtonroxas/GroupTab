@@ -4,8 +4,19 @@ import './App.css'
 // --- FIREBASE IMPORTS ---
 import { auth, googleProvider, db } from './firebase'
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
-import { doc, setDoc, onSnapshot } from 'firebase/firestore'
-
+import { 
+  doc, 
+  setDoc, 
+  onSnapshot, 
+  query, 
+  collection, 
+  where, 
+  getDocs, 
+  updateDoc, 
+  arrayUnion, 
+  addDoc,
+  deleteDoc
+} from 'firebase/firestore'
 // --- ASSETS ---
 const GoogleIcon = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -28,6 +39,8 @@ function App() {
   // --- DATA STATE ---
   const [trips, setTrips] = useState([]) 
   const [newFolderName, setNewFolderName] = useState('')
+  const [joinCodeInput, setJoinCodeInput] = useState('');
+  const [currentTripCode, setCurrentTripCode] = useState(''); // To display the code to friends
 
   // --- EDITING STATES ---
   const [isEditingTitle, setIsEditingTitle] = useState(false)
@@ -81,17 +94,25 @@ function App() {
   // ==========================================
   // 2. DATABASE SYNC (READ/WRITE)
   // ==========================================
+ // ==========================================
+  // 2. DATABASE SYNC (READ/WRITE)
+  // ==========================================
   useEffect(() => {
     if (user) {
-      const userDocRef = doc(db, "users", user.uid)
-      const unsub = onSnapshot(userDocRef, (docSnap) => {
-        if (docSnap.exists()) {
-          setTrips(docSnap.data().trips || [])
-        }
-      })
-      return () => unsub()
+      // Query the SHARED collection for trips where YOU are in the members array
+      const q = query(collection(db, "shared_trips"), where("members", "array-contains", user.uid));
+      
+      const unsub = onSnapshot(q, (querySnapshot) => {
+        const tripList = [];
+        querySnapshot.forEach((doc) => {
+          // Spread the data and include the Firestore ID
+          tripList.push({ id: doc.id, ...doc.data() });
+        });
+        setTrips(tripList);
+      });
+      return () => unsub();
     }
-  }, [user])
+  }, [user]);
 
   const saveToCloud = async (updatedTrips) => {
     setTrips(updatedTrips) 
@@ -175,27 +196,86 @@ function App() {
   // ==========================================
   // DATA ACTIONS
   // ==========================================
-  const createFolder = () => {
-    if (!newFolderName.trim()) return
+  const createFolder = async () => {
+    if (!newFolderName.trim()) return;
+
+    // 1. Generate a unique 6-character Invite Code
+    const generatedCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+
     const newTrip = {
-      id: Date.now(),
       name: newFolderName,
       expenses: [],
-      themes: {}, // For receipt backgrounds
-      background: '' // For trip card background
-    }
-    const updated = [...trips, newTrip]
-    saveToCloud(updated)
-    setNewFolderName('')
-  }
+      themes: {},
+      background: '',
+      joinCode: generatedCode,
+      ownerUid: user.uid,
+      members: [user.uid] // Start with you as the first member
+    };
 
-  const deleteFolder = (e, id) => {
-    e.stopPropagation() 
-    if (confirm("Delete this entire trip folder?")) {
-      const updated = trips.filter(t => t.id !== id)
-      saveToCloud(updated)
+    try {
+      // 2. Save to the top-level 'shared_trips' collection
+      await addDoc(collection(db, "shared_trips"), newTrip);
+      
+      // 3. Reset input
+      setNewFolderName('');
+    } catch (e) {
+      console.error("Error creating shared trip: ", e);
+      alert("Permission denied. Check your Firestore rules.");
     }
-  }
+  };
+
+  const handleJoinTrip = async (code) => {
+    if (!code.trim()) return alert("Please enter a code!");
+    setIsLoading(true);
+
+    try {
+      // 1. Search 'shared_trips' for a matching joinCode
+      const q = query(collection(db, "shared_trips"), where("joinCode", "==", code.toUpperCase().trim()));
+      const querySnapshot = await getDocs(q);
+
+      if (querySnapshot.empty) {
+        alert("Invalid Code! Double-check the code with your friend.");
+        setIsLoading(false);
+        return;
+      }
+
+      // 2. Get the specific trip document ID
+      const tripDoc = querySnapshot.docs[0];
+      const tripRef = doc(db, "shared_trips", tripDoc.id);
+
+      // 3. Add your User ID to the members array
+      await updateDoc(tripRef, {
+        members: arrayUnion(user.uid)
+      });
+
+      setJoinCodeInput(''); // Clear the input
+      alert("Trip joined successfully!");
+    } catch (error) {
+      console.error("Join Error:", error);
+      alert("Could not join the trip. Check your connection.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const deleteFolder = async (e, id) => {
+    e.stopPropagation(); // Prevents opening the trip while trying to delete it
+    
+    if (confirm("Delete this entire trip folder for everyone?")) {
+      try {
+        // Points directly to the shared document
+        const tripDocRef = doc(db, "shared_trips", id);
+        
+        await deleteDoc(tripDocRef);
+        
+        // No need to manually update state; 
+        // your onSnapshot listener will see the deletion and update the UI.
+      } catch (err) {
+        console.error("Error deleting trip: ", err);
+        alert("Failed to delete. You might not have permission.");
+      }
+    }
+  };
 
   const deleteExpense = (expenseId) => {
     const updatedTrips = trips.map(t => {
@@ -478,18 +558,39 @@ function App() {
             <div className="stat-pill"><span className="stat-num">{trips.length}</span><span className="stat-label">Active Trips</span></div>
           </div>
 
-          <div className="create-bar-container">
+          <div className="create-bar-container" style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+            {/* CREATE NEW TRIP */}
             <div className="create-bar">
               <span className="search-icon">✈️</span>
-              <input className="transparent-input" placeholder="Where are you going next? (e.g. Tokyo 2026)" value={newFolderName} onChange={e => setNewFolderName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && createFolder()}/>
+              <input 
+                className="transparent-input" 
+                placeholder="Create new trip (e.g. Madrid 2026)" 
+                value={newFolderName} 
+                onChange={e => setNewFolderName(e.target.value)} 
+                onKeyDown={(e) => e.key === 'Enter' && createFolder()}
+              />
               <button className="btn-icon" onClick={createFolder}>➝</button>
+            </div>
+
+            {/* JOIN EXISTING TRIP */}
+            <div className="create-bar" style={{ borderColor: 'var(--primary-glow)' }}>
+              <span className="search-icon">🔑</span>
+                <input 
+                  className="transparent-input" 
+                  placeholder="Enter Join Code (e.g. AB1234)" 
+                  value={joinCodeInput} 
+                  maxLength={6} // Prevents long-string errors
+                  onChange={e => setJoinCodeInput(e.target.value.toUpperCase())} // Forces uppercase for consistency
+                  onKeyDown={(e) => e.key === 'Enter' && handleJoinTrip(joinCodeInput)}
+              />
+              <button className="btn-icon" onClick={() => handleJoinTrip(joinCodeInput)}>Join</button>
             </div>
           </div>
 
           <div className="trips-section">
-            <h3 className="section-title">Your Trips</h3>
+            <h3 className="section-title">Your Trips🗺️</h3>
             {trips.length === 0 ? (
-              <div className="empty-state"><div className="empty-icon">mntn</div><p>No trips yet. Type a destination above to get started!</p></div>
+              <div className="empty-state"><div className="empty-icon"></div><p>No trips yet🗺️. Type a destination above to get started!</p></div>
             ) : (
               <div className="folder-grid">
                 {trips.map(trip => (
@@ -567,14 +668,49 @@ function App() {
       {/* ---------------- VIEW 2: TRIP OVERVIEW ---------------- */}
       {view === 'trip_view' && activeTrip && (
         <div>
-          <div style={{display:'flex', alignItems:'center', gap:'10px', marginBottom:'20px'}}>
-            {isEditingTitle ? (
-              <input className="header-title-input" value={tempTitle} onChange={(e) => setTempTitle(e.target.value)} onBlur={handleSaveTripName} onKeyDown={(e) => e.key === 'Enter' && handleSaveTripName()} autoFocus />
-            ) : (
-              <h1 className="header-title" onClick={() => { setIsEditingTitle(true); setTempTitle(activeTrip.name); }}>
-                {activeTrip.name} <span style={{fontSize:'1rem', opacity:0.5, marginLeft:'10px', cursor:'pointer', verticalAlign:'middle'}}>✎</span>
-              </h1>
-            )}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', marginBottom: '20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              {isEditingTitle ? (
+                <input 
+                  className="header-title-input" 
+                  value={tempTitle} 
+                  onChange={(e) => setTempTitle(e.target.value)} 
+                  onBlur={handleSaveTripName} 
+                  onKeyDown={(e) => e.key === 'Enter' && handleSaveTripName()} 
+                  autoFocus 
+                />
+              ) : (
+                <h1 className="header-title" onClick={() => { setIsEditingTitle(true); setTempTitle(activeTrip.name); }}>
+                  {activeTrip.name} <span style={{ fontSize: '1rem', opacity: 0.5, marginLeft: '10px', cursor: 'pointer', verticalAlign: 'middle' }}>✎</span>
+                </h1>
+              )}
+            </div>
+
+            {/* --- JOIN CODE BADGE --- */}
+            <div style={{
+              background: 'rgba(255, 255, 255, 0.1)',
+              border: '1px solid rgba(255, 255, 255, 0.2)',
+              padding: '6px 12px',
+              borderRadius: '12px',
+              width: 'fit-content',
+              fontSize: '0.85rem',
+              color: 'var(--primary-glow)',
+              display: 'flex',
+              gap: '8px',
+              alignItems: 'center'
+            }}>
+              <span style={{ opacity: 0.7 }}>Invite Code:</span>
+              <strong style={{ letterSpacing: '1px', color: 'white' }}>
+                {activeTrip.joinCode || '------'}
+              </strong>
+              <span 
+                style={{ cursor: 'pointer', marginLeft: '5px' }} 
+                onClick={() => navigator.clipboard.writeText(activeTrip.joinCode)}
+                title="Copy Code"
+              >
+                📋
+              </span>
+            </div>
           </div>
 
           <div className="layout-grid">
@@ -766,45 +902,52 @@ function App() {
         </div>
       )}
     </div>
-  )
-}
+  );
 
 function calculateDebts(expenses) {
-  const balances = {};
+  const pairwiseDebts = {}; // Key format: "Debtor->Creditor"
+
   expenses.forEach(exp => {
     const amount = exp.amount;
     const payer = exp.payer;
-    const involved = exp.involved; 
-    if (!amount || !payer || involved.length === 0) return;
-    balances[payer] = (balances[payer] || 0) + amount;
+    const involved = exp.involved;
+    
+    if (!amount || !payer || !involved || involved.length === 0) return;
+
     const splitAmount = amount / involved.length;
+
     involved.forEach(person => {
-      balances[person] = (balances[person] || 0) - splitAmount;
+      if (person === payer) return; // Skip if the person is the one who paid
+
+      const key = `${person}->${payer}`;
+      const reverseKey = `${payer}->${person}`;
+
+      // Mutual Cancellation: Check if the payer already owes this person money
+      if (pairwiseDebts[reverseKey]) {
+        pairwiseDebts[reverseKey] -= splitAmount;
+        
+        // If the balance flips (they now owe the payer), move it to the correct key
+        if (pairwiseDebts[reverseKey] < 0) {
+          pairwiseDebts[key] = Math.abs(pairwiseDebts[reverseKey]);
+          delete pairwiseDebts[reverseKey];
+        }
+      } else {
+        // Standard addition: add to the amount this person owes the payer
+        pairwiseDebts[key] = (pairwiseDebts[key] || 0) + splitAmount;
+      }
     });
   });
-  let debtors = [];
-  let creditors = [];
-  Object.entries(balances).forEach(([person, amount]) => {
-    const net = Math.round(amount * 100) / 100;
-    if (net < -0.01) debtors.push({ person, amount: net });
-    if (net > 0.01) creditors.push({ person, amount: net });
-  });
-  debtors.sort((a, b) => a.amount - b.amount);
-  creditors.sort((a, b) => b.amount - a.amount);
-  const transactions = [];
-  let i = 0; 
-  let j = 0; 
-  while (i < debtors.length && j < creditors.length) {
-    const debtor = debtors[i];
-    const creditor = creditors[j];
-    const amount = Math.min(Math.abs(debtor.amount), creditor.amount);
-    transactions.push(`${debtor.person} owes ${creditor.person} $${amount.toFixed(2)}`);
-    debtor.amount += amount;
-    creditor.amount -= amount;
-    if (Math.abs(debtor.amount) < 0.01) i++;
-    if (creditor.amount < 0.01) j++;
-  }
+
+  // Convert the pairwise object into the display strings
+  const transactions = Object.entries(pairwiseDebts)
+    .filter(([_, amount]) => amount > 0.01) // Filter out fractions of a cent
+    .map(([key, amount]) => {
+      const [debtor, creditor] = key.split('->');
+      return `${debtor} owes ${creditor} $${amount.toFixed(2)}`;
+    });
+
   return transactions.length > 0 ? transactions : ["No debts found!"];
 }
 
+}
 export default App
