@@ -1,19 +1,16 @@
-// src/firebase.js
 import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
-
-// Your web app's Firebase configuration
+// Read from .env file
 const firebaseConfig = {
-  apiKey: "AIzaSyBrG7TLc0eWz3P4b7ThSblu-zPM8mSCEZE",
-  authDomain: "grouptab-5c0c2.firebaseapp.com",
-  projectId: "grouptab-5c0c2",
-  storageBucket: "grouptab-5c0c2.firebasestorage.app",
-  messagingSenderId: "883294318725",
-  appId: "1:883294318725:web:c59deb904b39a3af93b9ec"
+  apiKey: import.meta.env.VITE_API_KEY,
+  authDomain: import.meta.env.VITE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_APP_ID
 };
-
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
