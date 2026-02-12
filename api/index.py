@@ -7,7 +7,6 @@ app = Flask(__name__)
 CORS(app)  # Allows the React frontend to communicate with this backend
 
 # --- 1. HEALTH CHECK ROUTE (New) ---
-# This lets you visit https://your-app.vercel.app/api in a browser to confirm it's running
 @app.route('/api', methods=['GET'])
 def health_check():
     return jsonify({"status": "healthy", "message": "Backend is running!"})
