@@ -14,9 +14,9 @@ import {
   getDocs, 
   updateDoc, 
   arrayUnion, 
-  addDoc,
   deleteDoc
 } from 'firebase/firestore'
+
 // --- ASSETS ---
 const GoogleIcon = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -40,7 +40,6 @@ function App() {
   const [trips, setTrips] = useState([]) 
   const [newFolderName, setNewFolderName] = useState('')
   const [joinCodeInput, setJoinCodeInput] = useState('');
-  const [currentTripCode, setCurrentTripCode] = useState(''); // To display the code to friends
 
   // --- EDITING STATES ---
   const [isEditingTitle, setIsEditingTitle] = useState(false)
@@ -69,6 +68,7 @@ function App() {
   // EDITING EXPENSE STATE
   const [editingIndex, setEditingIndex] = useState(null) 
   const [editingTripExpenseId, setEditingTripExpenseId] = useState(null) 
+  const [editingLocationBatch, setEditingLocationBatch] = useState(null);
 
   // Results
   const [results, setResults] = useState([])
@@ -102,7 +102,6 @@ function App() {
       
       const unsub = onSnapshot(q, (querySnapshot) => {
         const tripList = [];
-        console.log("Documents found in DB:", querySnapshot.size); // This should not be 0
         querySnapshot.forEach((doc) => {
           tripList.push({ id: doc.id, ...doc.data() });
         });
@@ -165,10 +164,10 @@ function App() {
     setActiveTripId(null)
     setActiveLocation(null)
     setShowBgPicker(null)
+    setEditingLocationBatch(null)
   }
 
   const openTrip = (id) => {
-    // Only open if we aren't clicking the background picker button
     setActiveTripId(id)
     setView('trip_view')
     setResults([]) 
@@ -190,8 +189,98 @@ function App() {
     setTipMode('$')
     setEditingIndex(null)
     setEditingTripExpenseId(null) 
+    setEditingLocationBatch(null) 
     setView('receipt_editor')
   }
+
+  // ==========================================
+  // NEW FEATURES: BATCH EDIT, PHOTO RESIZE, PDF
+  // ==========================================
+
+  // A. LOAD WHOLE RECEIPT (Fixes Tax Bug & Allows Adding Items)
+  const loadReceiptBatch = (location) => {
+    const batchExpenses = activeTrip.expenses.filter(e => e.location === location);
+    if (batchExpenses.length === 0) return;
+
+    const commonPayer = batchExpenses[0].payer;
+    const totalTax = batchExpenses.reduce((sum, e) => sum + e.taxShare, 0);
+    const totalTip = batchExpenses.reduce((sum, e) => sum + e.tipShare, 0);
+
+    const builderItems = batchExpenses.map(e => ({
+      name: e.rawName || e.item,
+      qty: e.rawQty || 1,
+      unitPrice: e.rawUnitPrice || (e.originalPrice / (e.rawQty || 1)),
+      totalPrice: e.originalPrice,
+      consumers: e.involved
+    }));
+
+    setReceiptLoc(location);
+    setReceiptPayer(commonPayer);
+    setReceiptTax(totalTax.toFixed(2));
+    setReceiptTip(totalTip.toFixed(2));
+    setCurrentItems(builderItems);
+    
+    setTaxMode('$'); 
+    setTipMode('$');
+    
+    setEditingLocationBatch(location); 
+    setView('receipt_editor');
+  };
+
+  // B. RESIZE IMAGE HELPER (Prevents "File too large")
+  const resizeImage = (file, maxWidth = 800) => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target.result;
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+
+          if (width > maxWidth) {
+            height *= maxWidth / width;
+            width = maxWidth;
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+          
+          resolve(canvas.toDataURL('image/jpeg', 0.7)); 
+        };
+      };
+    });
+  };
+
+  // C. RECEIPT UPLOAD HANDLER (Uses Resize)
+  const handleReceiptImageUpload = async (e, location) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (file.size > 10000000) { 
+       alert("File is way too huge! Please pick something smaller.");
+       return;
+    }
+
+    try {
+      const resizedBase64 = await resizeImage(file);
+      const updatedImages = { ...(activeTrip.receiptImages || {}), [location]: resizedBase64 };
+      await updateTripInCloud(activeTripId, { receiptImages: updatedImages });
+      
+    } catch (err) {
+      console.error("Image upload error:", err);
+      alert("Could not process image.");
+    }
+  };
+
+  // D. PRINT / PDF EXPORT
+  const printReceipt = () => {
+    window.print();
+  };
 
   // ==========================================
   // DATA ACTIONS
@@ -207,15 +296,13 @@ function App() {
       themes: {},
       background: '',
       joinCode: generatedCode,
-      members: [user.uid], // Ensure this is an array
-      createdAt: new Date() // Adding this helps with sorting/indexing
+      members: [user.uid],
+      createdAt: new Date()
     };
 
     try {
-      // We use the generatedCode as the Document ID
       await setDoc(doc(db, "shared_trips", generatedCode), newTrip);
       setNewFolderName('');
-      console.log("Trip created with ID:", generatedCode);
     } catch (e) {
       console.error("Error creating shared trip: ", e);
       alert("Check your console (F12) for the specific Firebase error.");
@@ -226,10 +313,8 @@ function App() {
     if (!joinCodeInput.trim()) return;
     
     const formattedCode = joinCodeInput.trim().toUpperCase();
-    console.log("Searching for code:", formattedCode);
 
     try {
-      // 1. Query for the document where the 'joinCode' field matches
       const q = query(
         collection(db, "shared_trips"), 
         where("joinCode", "==", formattedCode)
@@ -238,11 +323,9 @@ function App() {
       const querySnapshot = await getDocs(q);
 
       if (!querySnapshot.empty) {
-        // 2. Trip found! Grab the actual Firestore Document ID
         const tripDoc = querySnapshot.docs[0];
         const tripRef = doc(db, "shared_trips", tripDoc.id);
 
-        // 3. Add yourself to the members array
         await updateDoc(tripRef, {
           members: arrayUnion(user.uid)
         });
@@ -259,17 +342,11 @@ function App() {
   };
 
   const deleteFolder = async (e, id) => {
-    e.stopPropagation(); // Prevents opening the trip while trying to delete it
-    
+    e.stopPropagation();
     if (confirm("Delete this entire trip folder for everyone?")) {
       try {
-        // Points directly to the shared document
         const tripDocRef = doc(db, "shared_trips", id);
-        
         await deleteDoc(tripDocRef);
-        
-        // No need to manually update state; 
-        // your onSnapshot listener will see the deletion and update the UI.
       } catch (err) {
         console.error("Error deleting trip: ", err);
         alert("Failed to delete. You might not have permission.");
@@ -290,27 +367,20 @@ function App() {
       setShowBgPicker(null);
     } catch (e) {
       console.error("Update Error:", e);
-      // If the error message mentions "packet too large" or "size limit", 
-      // it's the 1MB Firestore limit.
       alert("Could not update background. The image might be too large.");
     }
   };
 
-  // --- FILE UPLOAD HANDLER ---
+  // --- FILE UPLOAD HANDLER (Trip Cover) ---
   const handleFileUpload = (e, tripId) => {
     const file = e.target.files[0];
-    
     if (file) {
-      // Firestore limit check (1MB = 1,048,576 bytes)
-      // We aim for 500KB to be safe because Base64 encoding adds ~33% size
       if (file.size > 500000) { 
         alert("Image is too large! Please choose a file smaller than 500KB.");
         return;
       }
-
       const reader = new FileReader();
       reader.onloadend = () => {
-        // Reader result is the Base64 string
         updateTripBackground(tripId, `url(${reader.result})`);
       };
       reader.readAsDataURL(file);
@@ -332,7 +402,7 @@ function App() {
     setIsEditingTitle(false);
   };
 
-  // --- EDIT SAVED EXPENSE ---
+  // --- EDIT SAVED EXPENSE (Legacy Single Item Edit) ---
   const editSavedExpense = (expense) => {
     setEditingTripExpenseId(expense.id)
     setReceiptLoc(expense.location)
@@ -355,19 +425,39 @@ function App() {
     setReceiptTip(expense.tipShare.toFixed(2))
     setTaxMode('$') 
     setTipMode('$')
-
+    
+    // Important: We are NOT in batch mode here, just single item fix
+    setEditingLocationBatch(null);
     setView('receipt_editor')
   }
 
-  // --- SERVERLESS CALCULATION ---
-  const calculateTripSettlement = () => {
+  // --- SERVERLESS CALCULATION (Connected to Flask Backend) ---
+  const calculateTripSettlement = async () => {
     if (!activeTrip || activeTrip.expenses.length === 0) return;
     setIsLoading(true);
-    setTimeout(() => {
-      const settlementPlan = calculateDebts(activeTrip.expenses);
+
+    try {
+      // Send expenses to the Python backend
+      const response = await fetch('/api/calculate', { 
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(activeTrip.expenses),
+      });
+
+      if (!response.ok) {
+        throw new Error('Network response was not ok');
+      }
+
+      const settlementPlan = await response.json();
       setResults(settlementPlan);
+    } catch (error) {
+      console.error("Error fetching settlement:", error);
+      alert("Failed to connect to backend. Make sure app.py is running on port 5000!");
+    } finally {
       setIsLoading(false);
-    }, 500); 
+    }
   }
 
   // --- BUILDER ACTIONS ---
@@ -405,6 +495,7 @@ function App() {
     setEditingIndex(index)
   }
 
+  // --- UPDATED SAVE FUNCTION (Handles Batch Overwrite) ---
   const saveReceiptToTrip = async () => {
   if (!receiptLoc || !receiptPayer) return alert("Enter Location and Payer");
     if (currentItems.length === 0) return alert("Add items");
@@ -425,7 +516,7 @@ function App() {
       const itemTax = item.totalPrice * taxRate;
       const itemTip = item.totalPrice * tipRate;
       return {
-        id: editingTripExpenseId || (Date.now() + Math.random()), 
+        id: (Date.now() + Math.random()), // Always generate new IDs to avoid conflicts
         item: `${item.qty}x ${item.name}`, 
         location: receiptLoc,
         payer: receiptPayer,
@@ -445,8 +536,13 @@ function App() {
       const tripRef = doc(db, "shared_trips", activeTripId);
       let finalExpensesList = activeTrip.expenses;
       
-      if (editingTripExpenseId) {
-        finalExpensesList = finalExpensesList.filter(e => e.id !== editingTripExpenseId);
+      // IF EDITING BATCH: Remove ALL old items from this location first
+      if (editingLocationBatch) {
+         finalExpensesList = finalExpensesList.filter(e => e.location !== editingLocationBatch);
+      } 
+      // IF EDITING SINGLE ITEM (Legacy support): Remove just that ID
+      else if (editingTripExpenseId) {
+         finalExpensesList = finalExpensesList.filter(e => e.id !== editingTripExpenseId);
       }
 
       await updateDoc(tripRef, {
@@ -456,6 +552,7 @@ function App() {
       setActiveLocation(receiptLoc);
       setView('receipt_detail');
       setEditingTripExpenseId(null);
+      setEditingLocationBatch(null); // Reset batch flag
     } catch (err) {
       console.error("Save failed:", err);
     }
@@ -491,7 +588,6 @@ function App() {
   // MAIN RENDER
   // ##########################################
   
-  // --- LOGIN VIEW ---
   if (view === 'login' || !user) {
     return (
       <div className="hero-wrapper">
@@ -535,7 +631,7 @@ function App() {
       <div className="background-glow"></div>
       
       {/* HEADER */}
-      <div style={{marginBottom:'20px', borderBottom:'1px solid var(--glass-border)', paddingBottom:'10px', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+      <div className="no-print" style={{marginBottom:'20px', borderBottom:'1px solid var(--glass-border)', paddingBottom:'10px', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
         <div style={{display:'flex', alignItems:'center', gap:'15px'}}>
            <h2 className="header-title" style={{margin:0, fontSize:'1.8rem', cursor:'pointer'}} onClick={goHome}>GroupTab 📁</h2>
            <span style={{fontSize:'0.9rem', color:'var(--text-muted)', background: 'rgba(255,255,255,0.1)', padding: '4px 10px', borderRadius: '20px'}}>
@@ -580,8 +676,8 @@ function App() {
                   className="transparent-input" 
                   placeholder="Enter Join Code (e.g. AB1234)" 
                   value={joinCodeInput} 
-                  maxLength={6} // Prevents long-string errors
-                  onChange={e => setJoinCodeInput(e.target.value.toUpperCase())} // Forces uppercase for consistency
+                  maxLength={6} 
+                  onChange={e => setJoinCodeInput(e.target.value.toUpperCase())} 
                   onKeyDown={(e) => e.key === 'Enter' && handleJoinTrip(joinCodeInput)}
               />
               <button className="btn-icon" onClick={() => handleJoinTrip(joinCodeInput)}>Join</button>
@@ -609,7 +705,6 @@ function App() {
                       </div>
                     </div>
                     
-                    {/* EDIT & DELETE BUTTONS */}
                     <div style={{display:'flex', gap:'5px', position:'absolute', top:'10px', right:'10px'}}>
                       <button 
                         className="delete-btn" 
@@ -620,12 +715,10 @@ function App() {
                       <button className="delete-btn" onClick={(e) => deleteFolder(e, trip.id)}>✕</button>
                     </div>
 
-                    {/* BACKGROUND PICKER POPUP (Specific to this trip) */}
                     {showBgPicker === trip.id && (
                       <div className="theme-picker-popup" onClick={e => e.stopPropagation()}>
                         <div style={{marginBottom:'12px', fontWeight:'bold', fontSize:'0.9rem'}}>Change Cover</div>
                         <div className="theme-options">
-                          {/* 5 COLOR OPTIONS + DEFAULT */}
                           <div className="theme-circle" style={{background:'linear-gradient(135deg, #6366f1, #a855f7)'}} onClick={() => updateTripBackground(trip.id, 'linear-gradient(135deg, #6366f1, #a855f7)')}></div>
                           <div className="theme-circle" style={{background:'linear-gradient(135deg, #ec4899, #8b5cf6)'}} onClick={() => updateTripBackground(trip.id, 'linear-gradient(135deg, #ec4899, #8b5cf6)')}></div>
                           <div className="theme-circle" style={{background:'linear-gradient(135deg, #10b981, #3b82f6)'}} onClick={() => updateTripBackground(trip.id, 'linear-gradient(135deg, #10b981, #3b82f6)')}></div>
@@ -644,7 +737,6 @@ function App() {
                             <div style={{height:'1px', background:'rgba(255,255,255,0.2)', flex:1}}></div>
                           </div>
 
-                          {/* FILE UPLOAD INPUT (HIDDEN) & BUTTON */}
                           <input 
                             type="file" 
                             accept="image/*" 
@@ -687,7 +779,6 @@ function App() {
               )}
             </div>
 
-            {/* --- JOIN CODE BADGE --- */}
             <div style={{
               background: 'rgba(255, 255, 255, 0.1)',
               border: '1px solid rgba(255, 255, 255, 0.2)',
@@ -781,15 +872,17 @@ function App() {
 
       {/* ---------------- VIEW 3: SINGLE RECEIPT DETAIL ---------------- */}
       {view === 'receipt_detail' && activeLocation && (
-        <div className="container">
-          <button className="back-btn" onClick={() => setView('trip_view')} style={{marginBottom:'20px'}}>← Back to Trip</button>
+        <div className="container print-container">
+          <div className="no-print">
+            <button className="back-btn" onClick={() => setView('trip_view')} style={{marginBottom:'20px'}}>← Back to Trip</button>
+          </div>
           
-          <div style={{display:'flex', alignItems:'center', gap:'15px', marginBottom:'20px'}}>
-            <h1 className="header-title" style={{margin:0}}>{activeLocation} <span style={{fontSize:'0.5em', opacity:0.5}}>Receipt</span></h1>
-            <div style={{position:'relative'}}>
-              <button className="btn-icon" style={{width:'36px', height:'36px', fontSize:'1rem', background:'rgba(255,255,255,0.1)'}} onClick={() => setShowBgPicker(!showBgPicker)}>🎨</button>
-              
-              {showBgPicker && (
+          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px'}}>
+             <h1 className="header-title" style={{margin:0}}>{activeLocation} <span className="no-print" style={{fontSize:'0.5em', opacity:0.5}}>Receipt</span></h1>
+             
+             <div className="no-print" style={{position:'relative'}}>
+               <button className="btn-icon" style={{width:'36px', height:'36px', fontSize:'1rem', background:'rgba(255,255,255,0.1)'}} onClick={() => setShowBgPicker(!showBgPicker)}>🎨</button>
+               {showBgPicker && (
                 <div className="theme-picker-popup">
                   <div style={{marginBottom:'8px', fontWeight:'bold', fontSize:'0.8rem'}}>Change Card Background</div>
                   <div className="theme-options">
@@ -805,9 +898,32 @@ function App() {
                     <button className="btn btn-primary" style={{padding:'4px 8px', fontSize:'0.8rem', width:'auto'}} onClick={() => updateReceiptTheme(`url(${customImageUrl})`)}>Go</button>
                   </div>
                 </div>
-              )}
-            </div>
+               )}
+             </div>
           </div>
+
+          {/* --- NEW HIGH VISIBILITY ACTION BAR --- */}
+          <div className="action-bar no-print">
+            <button className="btn-action btn-edit" onClick={() => loadReceiptBatch(activeLocation)}>
+              <span>✎</span> Edit / Add Items
+            </button>
+            
+            <button className="btn-action btn-pdf" onClick={printReceipt}>
+              <span>📄</span> Save as PDF
+            </button>
+            
+            <label className="btn-action btn-upload">
+              <span>📷</span> Upload Photo
+              <input type="file" accept="image/*" style={{display:'none'}} onChange={(e) => handleReceiptImageUpload(e, activeLocation)}/>
+            </label>
+          </div>
+          
+          {/* RECEIPT IMAGE DISPLAY */}
+          {activeTrip.receiptImages && activeTrip.receiptImages[activeLocation] && (
+            <div style={{marginBottom:'20px', borderRadius:'12px', overflow:'hidden', border:'1px solid var(--glass-border)', boxShadow:'0 10px 30px rgba(0,0,0,0.3)'}}>
+               <img src={activeTrip.receiptImages[activeLocation]} alt="Receipt" style={{width:'100%', maxHeight:'400px', objectFit:'contain', background:'rgba(0,0,0,0.2)', display:'block'}} />
+            </div>
+          )}
           
           <div className="layout-grid">
             <div className="card" style={ activeReceiptTheme ? { backgroundImage: activeReceiptTheme, backgroundSize: 'cover', backgroundPosition: 'center', boxShadow: '0 20px 50px rgba(0,0,0,0.5)' } : {}}>
@@ -825,7 +941,7 @@ function App() {
                     </div>
                     <div className="expense-box-footer" style={{display:'flex', alignItems:'center', gap:'15px'}}>
                        <span style={{color:'var(--success)', fontWeight:'bold', fontSize:'1.1rem'}}>${exp.amount.toFixed(2)}</span>
-                       <div style={{display:'flex', gap:'10px'}}>
+                       <div className="no-print" style={{display:'flex', gap:'10px'}}>
                           <span style={{cursor:'pointer', fontSize:'1.2rem'}} onClick={() => editSavedExpense(exp)}>✎</span>
                           <span style={{cursor:'pointer', fontSize:'1.2rem', color:'var(--danger)'}} onClick={() => deleteExpense(exp.id)}>✕</span>
                        </div>
@@ -866,7 +982,12 @@ function App() {
         <div className="container">
           <button className="back-btn" onClick={() => setView('trip_view')} style={{marginBottom:'20px'}}>Cancel</button>
           <div className="card">
-            <h2 style={{marginTop:0, color:'var(--primary)'}}>{editingTripExpenseId ? `Edit Item in ${receiptLoc}` : "New Receipt"}</h2>
+            <h2 style={{marginTop:0, color:'var(--primary)'}}>
+              {editingLocationBatch 
+                ? `Editing Receipt: ${editingLocationBatch}` 
+                : (editingTripExpenseId ? `Edit Item in ${receiptLoc}` : "New Receipt")}
+            </h2>
+            
             <div className="input-row" style={{display:'flex', gap:'15px', marginBottom:'15px'}}>
                <div className="input-group" style={{flex:1}}><label>Location</label><input placeholder="e.g. Cowfish" value={receiptLoc} onChange={e => setReceiptLoc(e.target.value)} /></div>
                <div className="input-group" style={{flex:1}}><label>Payer</label><input placeholder="e.g. Ashton" value={receiptPayer} onChange={e => setReceiptPayer(e.target.value)} /></div>
@@ -898,15 +1019,16 @@ function App() {
                <div className="input-group" style={{flex:1}}><div style={{display:'flex', justifyContent:'space-between', marginBottom:'5px'}}><label>Tax</label><span onClick={()=>setTaxMode(taxMode==='$'?'%':'$')} style={{color:'var(--primary)', cursor:'pointer', fontWeight:'bold'}}>{taxMode}</span></div><input type="number" value={receiptTax} onChange={e => setReceiptTax(e.target.value)} /></div>
                <div className="input-group" style={{flex:1}}><div style={{display:'flex', justifyContent:'space-between', marginBottom:'5px'}}><label>Tip</label><span onClick={()=>setTipMode(tipMode==='$'?'%':'$')} style={{color:'var(--primary)', cursor:'pointer', fontWeight:'bold'}}>{tipMode}</span></div><input type="number" value={receiptTip} onChange={e => setReceiptTip(e.target.value)} /></div>
             </div>
-            <button className="btn btn-primary" style={{marginTop:'30px'}} onClick={saveReceiptToTrip}>{editingTripExpenseId ? "Save Changes" : "Save Receipt"}</button>
+            <button className="btn btn-primary" style={{marginTop:'30px'}} onClick={saveReceiptToTrip}>{editingTripExpenseId || editingLocationBatch ? "Save Changes" : "Save Receipt"}</button>
           </div>
         </div>
       )}
     </div>
   );
+}
 
 function calculateDebts(expenses) {
-  const pairwiseDebts = {}; // Key format: "Debtor->Creditor"
+  const pairwiseDebts = {}; 
 
   expenses.forEach(exp => {
     const amount = exp.amount;
@@ -918,30 +1040,26 @@ function calculateDebts(expenses) {
     const splitAmount = amount / involved.length;
 
     involved.forEach(person => {
-      if (person === payer) return; // Skip if the person is the one who paid
+      if (person === payer) return;
 
       const key = `${person}->${payer}`;
       const reverseKey = `${payer}->${person}`;
 
-      // Mutual Cancellation: Check if the payer already owes this person money
       if (pairwiseDebts[reverseKey]) {
         pairwiseDebts[reverseKey] -= splitAmount;
         
-        // If the balance flips (they now owe the payer), move it to the correct key
         if (pairwiseDebts[reverseKey] < 0) {
           pairwiseDebts[key] = Math.abs(pairwiseDebts[reverseKey]);
           delete pairwiseDebts[reverseKey];
         }
       } else {
-        // Standard addition: add to the amount this person owes the payer
         pairwiseDebts[key] = (pairwiseDebts[key] || 0) + splitAmount;
       }
     });
   });
 
-  // Convert the pairwise object into the display strings
   const transactions = Object.entries(pairwiseDebts)
-    .filter(([_, amount]) => amount > 0.01) // Filter out fractions of a cent
+    .filter(([_, amount]) => amount > 0.01)
     .map(([key, amount]) => {
       const [debtor, creditor] = key.split('->');
       return `${debtor} owes ${creditor} $${amount.toFixed(2)}`;
@@ -950,5 +1068,4 @@ function calculateDebts(expenses) {
   return transactions.length > 0 ? transactions : ["No debts found!"];
 }
 
-}
 export default App

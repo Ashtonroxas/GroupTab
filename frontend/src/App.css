@@ -3,9 +3,9 @@
 
 :root {
   --bg-deep: #030014;
-  --primary: #6366f1;
+  --primary: #6366f1;   /* Indigo */
   --primary-glow: #818cf8;
-  --secondary: #a855f7;
+  --secondary: #a855f7; /* Purple */
   --glass-surface: rgba(255, 255, 255, 0.05);
   --glass-border: rgba(255, 255, 255, 0.1);
   --text-main: #ffffff;
@@ -41,7 +41,7 @@ body {
 }
 
 .app-container {
-  max-width: 1280px; /* Widened slightly to fit receipt view */
+  max-width: 1280px; 
   margin: 0 auto;
   padding: 40px 20px;
   min-height: 100vh;
@@ -153,13 +153,13 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.03em; }
 .theme-picker-popup {
   position: absolute;
   top: 45px;
-  right: -10px; /* Slight offset to ensure it doesn't get cut off */
-  background: rgba(30, 30, 35, 0.98); /* Slightly less transparent for readability */
+  right: -10px;
+  background: rgba(30, 30, 35, 0.98);
   backdrop-filter: blur(20px);
   border: 1px solid var(--glass-border);
-  padding: 20px; /* More padding */
+  padding: 20px;
   border-radius: 16px;
-  width: 320px; /* WIDER width to fit inputs better */
+  width: 320px;
   z-index: 100;
   box-shadow: 0 20px 40px rgba(0,0,0,0.6);
   animation: fadeInUp 0.2s ease-out;
@@ -173,7 +173,7 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.03em; }
 }
 
 .theme-circle {
-  width: 36px; /* Slightly bigger circles */
+  width: 36px;
   height: 36px;
   border-radius: 50%;
   cursor: pointer;
@@ -186,7 +186,7 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.03em; }
   border-color: white;
 }
 
-/* Style for the File Upload Button so it stands out */
+/* File Upload Button in Popup */
 .upload-btn {
     padding: 8px;
     font-size: 0.9rem;
@@ -200,7 +200,7 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.03em; }
     align-items: center;
     justify-content: center;
     gap: 8px;
-    width: 100%; /* Make it full width in the popup */
+    width: 100%;
     margin-top: 10px;
 }
 
@@ -210,7 +210,7 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.03em; }
     color: white;
 }
 
-/* --- BUTTONS --- */
+/* --- STANDARD BUTTONS --- */
 .btn {
   padding: 14px 24px;
   border-radius: 14px;
@@ -324,7 +324,7 @@ input:focus {
 .stat-num { font-weight: 700; color: white; font-size: 1.2rem; }
 .stat-label { color: var(--text-muted); font-size: 0.9rem; }
 
-/* Action Bar */
+/* Action Bar (Search/Create) */
 .create-bar-container { margin-bottom: 60px; }
 .create-bar {
   background: rgba(20, 20, 25, 0.6);
@@ -363,7 +363,6 @@ input:focus {
   justify-content: space-between;
   align-items: flex-start;
   position: relative;
-  /* overflow: hidden; REMOVED to allow popup to show */
 }
 .folder-card::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 4px; background: linear-gradient(90deg, var(--primary), var(--secondary)); opacity: 0; transition: opacity 0.3s; border-radius: 20px 20px 0 0; }
 .folder-card:hover { transform: translateY(-5px); background: rgba(255, 255, 255, 0.07); }
@@ -377,7 +376,7 @@ input:focus {
 .delete-btn:hover { background: rgba(239, 68, 68, 0.2); color: #ef4444; border-color: #ef4444; }
 
 /* ========================================= */
-/* --- RECEIPT VIEW (THE LAYOUT YOU WANTED) --- */
+/* --- RECEIPT VIEW --- */
 /* ========================================= */
 
 .layout-grid {
@@ -385,8 +384,67 @@ input:focus {
   gap: 32px;
 }
 @media (min-width: 900px) {
-  /* This split matches your 1st CSS: Left items, Right cards */
   .layout-grid { grid-template-columns: 350px 1fr; align-items: start; }
+}
+
+/* --- NEW HIGH VISIBILITY ACTION BAR --- */
+.action-bar {
+  display: flex;
+  gap: 15px;
+  margin-top: 20px;
+  margin-bottom: 25px;
+  flex-wrap: wrap; /* Stacks on mobile */
+}
+
+.btn-action {
+  flex: 1; /* Makes them all equal width */
+  min-width: 160px;
+  padding: 16px 20px;
+  border-radius: 16px;
+  font-weight: 700;
+  font-size: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+  transition: transform 0.2s, filter 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: white;
+  cursor: pointer;
+  text-decoration: none; /* For labels behaving like buttons */
+}
+
+.btn-action:hover {
+  transform: translateY(-3px);
+  filter: brightness(1.15);
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+}
+
+.btn-action:active {
+  transform: translateY(-1px);
+}
+
+/* --- UNIFIED BRAND COLORS FOR ALL ACTIONS --- */
+/* This matches your main Indigo/Purple branding */
+.btn-edit, .btn-pdf, .btn-upload {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.btn-edit:hover, .btn-pdf:hover, .btn-upload:hover {
+  background: linear-gradient(135deg, #818cf8, #c084fc); /* Lighter glow on hover */
+  box-shadow: 0 0 20px rgba(99, 102, 241, 0.6);
+}
+
+/* Mobile Adjustment */
+@media (max-width: 600px) {
+  .btn-action {
+    width: 100%;
+    flex: none;
+  }
 }
 
 /* --- ITEMS LIST (Left Column) --- */
@@ -429,12 +487,12 @@ input:focus {
 }
 
 .spreadsheet-card {
-  background: rgba(255, 255, 255, 0.03); /* Glass style instead of #0f0f11 */
+  background: rgba(255, 255, 255, 0.03);
   backdrop-filter: blur(16px);
   border: 1px solid var(--glass-border);
   border-radius: 20px;
   overflow: hidden;
-  width: 280px; /* Fixed width to match your layout preference */
+  width: 280px; 
   flex-shrink: 0;
   box-shadow: 0 10px 30px -10px rgba(0,0,0,0.3);
   transition: transform 0.2s;
@@ -451,7 +509,7 @@ input:focus {
   font-weight: 600;
   text-align: center;
   border-bottom: 1px solid var(--glass-border);
-  color: var(--primary-glow); /* Using the glow color */
+  color: var(--primary-glow);
 }
 
 .spreadsheet-body { padding: 16px; }
@@ -567,4 +625,46 @@ input:focus {
   .dashboard-header { flex-direction: column; align-items: flex-start; gap: 20px; }
   .dash-title { font-size: 2rem; }
   .create-bar { padding: 8px 8px 8px 16px; }
+}
+
+/* --- PRINT STYLES (PDF EXPORT) --- */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .print-container, .print-container * {
+    visibility: visible;
+  }
+  .print-container {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 20px;
+    background: white; /* Save ink */
+    color: black;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .card, .spreadsheet-card {
+    border: 1px solid #ddd;
+    box-shadow: none;
+    background: none;
+    color: black;
+  }
+  .expense-box {
+    border-bottom: 1px solid #eee;
+    color: black !important;
+  }
+  .expense-box div {
+    color: black !important;
+  }
+  /* Ensure text is readable on white paper */
+  .header-title, .dash-title, .folder-name {
+    background: none;
+    -webkit-text-fill-color: black;
+    color: black;
+  }
 }

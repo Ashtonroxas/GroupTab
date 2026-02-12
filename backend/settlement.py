@@ -7,46 +7,55 @@ class Expense:
         self.involved = involved
 
 def calculate_settlements(expenses):
-    balances = {}
+    # Key format: "Debtor->Creditor"
+    # Value: Amount owed
+    pairwise_debts = {}
 
-    # 1. Calculate Net Balances
-    for expense in expenses:
-        if expense.payer not in balances: balances[expense.payer] = 0.0
-        balances[expense.payer] += expense.amount
+    for exp in expenses:
+        payer = exp.payer
+        amount = exp.amount
+        involved = exp.involved
 
-        split_amount = expense.amount / len(expense.involved)
-        for person in expense.involved:
-            if person not in balances: balances[person] = 0.0
-            balances[person] -= split_amount
+        # Basic validation (same as your JS check)
+        if not amount or not payer or not involved or len(involved) == 0:
+            continue
 
-    # 2. Separate Debtors and Creditors
-    debtors = []
-    creditors = []
+        split_amount = amount / len(involved)
 
-    for person, amount in balances.items():
-        net = round(amount, 2)
-        if net < -0.01: debtors.append({'person': person, 'amount': net})
-        if net > 0.01: creditors.append({'person': person, 'amount': net})
+        for person in involved:
+            if person == payer:
+                continue  # Skip if the person is the one who paid
 
-    debtors.sort(key=lambda x: x['amount'])
-    creditors.sort(key=lambda x: x['amount'], reverse=True)
+            key = f"{person}->{payer}"
+            reverse_key = f"{payer}->{person}"
 
-    # 3. Match them up
-    settlements = []
-    i = 0
-    j = 0
+            # Mutual Cancellation: Check if the payer already owes this person money
+            if reverse_key in pairwise_debts:
+                pairwise_debts[reverse_key] -= split_amount
 
-    while i < len(debtors) and j < len(creditors):
-        debtor = debtors[i]
-        creditor = creditors[j]
+                # If the balance flips (they now owe the payer), move it to the correct key
+                # Using a small epsilon for float comparison safety
+                if pairwise_debts[reverse_key] < -0.001:
+                    remaining_debt = abs(pairwise_debts[reverse_key])
+                    del pairwise_debts[reverse_key]
+                    pairwise_debts[key] = remaining_debt
+                
+                # If they exactly paid off the debt, remove the key
+                elif abs(pairwise_debts[reverse_key]) < 0.001:
+                    del pairwise_debts[reverse_key]
 
-        amount = min(abs(debtor['amount']), creditor['amount'])
-        settlements.append(f"{debtor['person']} owes {creditor['person']} ${amount:.2f}")
+            else:
+                # Standard addition: add to the amount this person owes the payer
+                if key in pairwise_debts:
+                    pairwise_debts[key] += split_amount
+                else:
+                    pairwise_debts[key] = split_amount
 
-        debtor['amount'] += amount
-        creditor['amount'] -= amount
+    # Convert the pairwise object into the display strings
+    results = []
+    for key, amount in pairwise_debts.items():
+        if amount > 0.01:  # Filter out fractions of a cent
+            debtor, creditor = key.split('->')
+            results.append(f"{debtor} owes {creditor} ${amount:.2f}")
 
-        if abs(debtor['amount']) < 0.01: i += 1
-        if creditor['amount'] < 0.01: j += 1
-
-    return settlements
+    return results if len(results) > 0 else ["No debts found!"]
