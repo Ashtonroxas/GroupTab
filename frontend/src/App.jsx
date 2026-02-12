@@ -58,7 +58,7 @@ function App() {
   const [receiptTax, setReceiptTax] = useState('')
   const [receiptTip, setReceiptTip] = useState('')
   const [currentItems, setCurrentItems] = useState([])
-  
+   
   // Item Inputs
   const [itemName, setItemName] = useState('')
   const [unitPrice, setUnitPrice] = useState('')   
@@ -144,7 +144,7 @@ function App() {
   // HELPER: GET DATA
   // ==========================================
   const activeTrip = trips.find(t => t.id === activeTripId)
-  
+   
   const locationExpenses = activeTrip 
     ? activeTrip.expenses.filter(e => e.location === activeLocation)
     : []
@@ -520,7 +520,7 @@ function App() {
         item: `${item.qty}x ${item.name}`, 
         location: receiptLoc,
         payer: receiptPayer,
-        amount: item.totalPrice + itemTax + itemTip,     
+        amount: item.totalPrice + itemTax + itemTip,      
         involved: item.consumers,
         rawName: item.name,
         rawQty: item.qty,
@@ -538,11 +538,11 @@ function App() {
       
       // IF EDITING BATCH: Remove ALL old items from this location first
       if (editingLocationBatch) {
-         finalExpensesList = finalExpensesList.filter(e => e.location !== editingLocationBatch);
+          finalExpensesList = finalExpensesList.filter(e => e.location !== editingLocationBatch);
       } 
       // IF EDITING SINGLE ITEM (Legacy support): Remove just that ID
       else if (editingTripExpenseId) {
-         finalExpensesList = finalExpensesList.filter(e => e.id !== editingTripExpenseId);
+          finalExpensesList = finalExpensesList.filter(e => e.id !== editingTripExpenseId);
       }
 
       await updateDoc(tripRef, {
@@ -587,7 +587,7 @@ function App() {
   // ##########################################
   // MAIN RENDER
   // ##########################################
-  
+   
   if (view === 'login' || !user) {
     return (
       <div className="hero-wrapper">
@@ -940,11 +940,11 @@ function App() {
                       </div>
                     </div>
                     <div className="expense-box-footer" style={{display:'flex', alignItems:'center', gap:'15px'}}>
-                       <span style={{color:'var(--success)', fontWeight:'bold', fontSize:'1.1rem'}}>${exp.amount.toFixed(2)}</span>
-                       <div className="no-print" style={{display:'flex', gap:'10px'}}>
-                          <span style={{cursor:'pointer', fontSize:'1.2rem'}} onClick={() => editSavedExpense(exp)}>✎</span>
-                          <span style={{cursor:'pointer', fontSize:'1.2rem', color:'var(--danger)'}} onClick={() => deleteExpense(exp.id)}>✕</span>
-                       </div>
+                        <span style={{color:'var(--success)', fontWeight:'bold', fontSize:'1.1rem'}}>${exp.amount.toFixed(2)}</span>
+                        <div className="no-print" style={{display:'flex', gap:'10px'}}>
+                           <span style={{cursor:'pointer', fontSize:'1.2rem'}} onClick={() => editSavedExpense(exp)}>✎</span>
+                           <span style={{cursor:'pointer', fontSize:'1.2rem', color:'var(--danger)'}} onClick={() => deleteExpense(exp.id)}>✕</span>
+                        </div>
                     </div>
                   </div>
                 ))}
@@ -960,7 +960,7 @@ function App() {
                     <div className="spreadsheet-header">{person}</div>
                     <div className="spreadsheet-body">
                       {data.items.map((i, idx) => (
-                         <div key={idx} className="line-item"><span>{i.name}</span><span>{i.cost.toFixed(2)}</span></div>
+                          <div key={idx} className="line-item"><span>{i.name}</span><span>{i.cost.toFixed(2)}</span></div>
                       ))}
                     </div>
                     <div className="spreadsheet-footer">
@@ -1025,47 +1025,6 @@ function App() {
       )}
     </div>
   );
-}
-
-function calculateDebts(expenses) {
-  const pairwiseDebts = {}; 
-
-  expenses.forEach(exp => {
-    const amount = exp.amount;
-    const payer = exp.payer;
-    const involved = exp.involved;
-    
-    if (!amount || !payer || !involved || involved.length === 0) return;
-
-    const splitAmount = amount / involved.length;
-
-    involved.forEach(person => {
-      if (person === payer) return;
-
-      const key = `${person}->${payer}`;
-      const reverseKey = `${payer}->${person}`;
-
-      if (pairwiseDebts[reverseKey]) {
-        pairwiseDebts[reverseKey] -= splitAmount;
-        
-        if (pairwiseDebts[reverseKey] < 0) {
-          pairwiseDebts[key] = Math.abs(pairwiseDebts[reverseKey]);
-          delete pairwiseDebts[reverseKey];
-        }
-      } else {
-        pairwiseDebts[key] = (pairwiseDebts[key] || 0) + splitAmount;
-      }
-    });
-  });
-
-  const transactions = Object.entries(pairwiseDebts)
-    .filter(([_, amount]) => amount > 0.01)
-    .map(([key, amount]) => {
-      const [debtor, creditor] = key.split('->');
-      return `${debtor} owes ${creditor} $${amount.toFixed(2)}`;
-    });
-
-  return transactions.length > 0 ? transactions : ["No debts found!"];
 }
 
 export default App
