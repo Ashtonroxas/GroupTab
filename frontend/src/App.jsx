@@ -13,6 +13,7 @@ import {
   where,
   updateDoc,
   arrayUnion,
+  arrayRemove, // Added for un-settling debts
   deleteDoc,
   writeBatch
 } from 'firebase/firestore'
@@ -54,7 +55,7 @@ function App() {
   const [tempTitle, setTempTitle] = useState('')
 
   // --- BACKGROUND PICKER STATE ---
-  const [showBgPicker, setShowBgPicker] = useState(null) // Stores ID of trip being edited
+  const [showBgPicker, setShowBgPicker] = useState(null)
   const [customImageUrl, setCustomImageUrl] = useState('')
   const fileInputRef = useRef(null)
 
@@ -71,7 +72,9 @@ function App() {
   const [itemName, setItemName] = useState('')
   const [unitPrice, setUnitPrice] = useState('')
   const [quantity, setQuantity] = useState(1)
-  const [itemConsumer, setItemConsumer] = useState('')
+  const [selectedConsumers, setSelectedConsumers] = useState([])
+  const [sessionPeople, setSessionPeople] = useState([])
+  const [newPersonName, setNewPersonName] = useState('')
 
   // EDITING EXPENSE STATE
   const [editingIndex, setEditingIndex] = useState(null)
@@ -81,6 +84,59 @@ function App() {
   // Results
   const [results, setResults] = useState([])
   const [isLoading, setIsLoading] = useState(false)
+
+  // ==========================================
+  // HELPER: GET DATA
+  // ==========================================
+  const activeTrip = trips.find(t => t.id === activeTripId)
+  const isTripManager = (trip) => {
+    if (!user || !trip) return false;
+    if (trip.ownerId) return trip.ownerId === user.uid || trip.admins?.includes(user.uid);
+    return trip.members?.[0] === user.uid;
+  };
+  const manageableTrips = trips.filter(isTripManager);
+
+  const locationExpenses = activeTrip
+    ? activeTrip.expenses.filter(e => e.location === activeLocation).sort((a, b) => {
+      const dateA = a.createdAt instanceof Object ? a.createdAt.toMillis?.() || new Date(a.createdAt).getTime() : new Date(a.createdAt).getTime();
+      const dateB = b.createdAt instanceof Object ? b.createdAt.toMillis?.() || new Date(b.createdAt).getTime() : new Date(b.createdAt).getTime();
+      return dateB - dateA;
+    })
+    : []
+
+  const tripLocations = activeTrip
+    ? [...new Set(activeTrip.expenses.map(e => e.location))]
+    : []
+
+  const activeReceiptTheme = activeTrip?.themes?.[activeLocation] || null;
+
+  // ==========================================
+  // CONSUMER CHIP LOGIC
+  // ==========================================
+  const existingPeople = Array.from(new Set(activeTrip?.expenses?.flatMap(e => e.involved) || []));
+  const myName = user?.displayName ? user.displayName.split(' ')[0] : 'Me';
+  if (!existingPeople.includes(myName)) existingPeople.unshift(myName);
+
+  const allAvailablePeople = Array.from(new Set([...existingPeople, ...sessionPeople]));
+
+  const handleAddNewPerson = (e) => {
+    e.preventDefault();
+    if (!newPersonName.trim()) return;
+    const name = newPersonName.trim();
+
+    if (!allAvailablePeople.includes(name)) setSessionPeople([...sessionPeople, name]);
+    if (!selectedConsumers.includes(name)) setSelectedConsumers([...selectedConsumers, name]);
+
+    setNewPersonName('');
+  }
+
+  const toggleConsumer = (name) => {
+    if (selectedConsumers.includes(name)) {
+      setSelectedConsumers(selectedConsumers.filter(n => n !== name));
+    } else {
+      setSelectedConsumers([...selectedConsumers, name]);
+    }
+  }
 
   // ==========================================
   // 1. AUTHENTICATION LISTENER
@@ -105,7 +161,6 @@ function App() {
   // ==========================================
   useEffect(() => {
     if (user) {
-      console.log("Listening for trips for user:", user.uid);
       const q = query(collection(db, "shared_trips"), where("members", "array-contains", user.uid));
 
       const unsub = onSnapshot(q, (querySnapshot) => {
@@ -133,7 +188,6 @@ function App() {
 
   useEffect(() => {
     if (!user) return;
-
     trips
       .filter(trip => !trip.ownerId && trip.members?.[0] === user.uid)
       .forEach(async (trip) => {
@@ -176,32 +230,6 @@ function App() {
   }
 
   // ==========================================
-  // HELPER: GET DATA
-  // ==========================================
-  const activeTrip = trips.find(t => t.id === activeTripId)
-  const isTripManager = (trip) => {
-    if (!user || !trip) return false;
-    if (trip.ownerId) return trip.ownerId === user.uid || trip.admins?.includes(user.uid);
-    return trip.members?.[0] === user.uid;
-  };
-  const manageableTrips = trips.filter(isTripManager);
-
-  const locationExpenses = activeTrip
-    ? activeTrip.expenses.filter(e => e.location === activeLocation).sort((a, b) => {
-      const dateA = a.createdAt instanceof Object ? a.createdAt.toMillis?.() || new Date(a.createdAt).getTime() : new Date(a.createdAt).getTime();
-      const dateB = b.createdAt instanceof Object ? b.createdAt.toMillis?.() || new Date(b.createdAt).getTime() : new Date(b.createdAt).getTime();
-      return dateB - dateA;
-    })
-    : []
-
-  const tripLocations = activeTrip
-    ? [...new Set(activeTrip.expenses.map(e => e.location))]
-    : []
-
-  // Current Theme for Active Location (Receipt View)
-  const activeReceiptTheme = activeTrip?.themes?.[activeLocation] || null;
-
-  // ==========================================
   // NAVIGATION ACTIONS
   // ==========================================
   const goHome = () => {
@@ -235,14 +263,15 @@ function App() {
     setEditingIndex(null)
     setEditingTripExpenseId(null)
     setEditingLocationBatch(null)
+    setSelectedConsumers([])
+    setSessionPeople([])
+    setNewPersonName('')
     setView('receipt_editor')
   }
 
   // ==========================================
-  // NEW FEATURES: BATCH EDIT, PHOTO RESIZE, PDF
+  // BATCH EDIT, PHOTO RESIZE, PDF
   // ==========================================
-
-  // A. LOAD WHOLE RECEIPT (Fixes Tax Bug & Allows Adding Items)
   const loadReceiptBatch = (location) => {
     const batchExpenses = activeTrip.expenses.filter(e => e.location === location);
     if (batchExpenses.length === 0) return;
@@ -272,7 +301,6 @@ function App() {
     setView('receipt_editor');
   };
 
-  // B. RESIZE IMAGE HELPER (Prevents "File too large")
   const resizeImage = (file, maxWidth = 800) => {
     return new Promise((resolve) => {
       const reader = new FileReader();
@@ -301,31 +329,21 @@ function App() {
     });
   };
 
-  // C. RECEIPT UPLOAD HANDLER (Uses Resize)
   const handleReceiptImageUpload = async (e, location) => {
     const file = e.target.files[0];
     if (!file) return;
-
-    if (file.size > 10000000) {
-      alert("File is way too huge! Please pick something smaller.");
-      return;
-    }
-
+    if (file.size > 10000000) return alert("File is way too huge! Please pick something smaller.");
     try {
       const resizedBase64 = await resizeImage(file);
       const updatedImages = { ...(activeTrip.receiptImages || {}), [location]: resizedBase64 };
       await updateTripInCloud(activeTripId, { receiptImages: updatedImages });
-
     } catch (err) {
       console.error("Image upload error:", err);
       alert("Could not process image.");
     }
   };
 
-  // D. PRINT / PDF EXPORT
-  const printReceipt = () => {
-    window.print();
-  };
+  const printReceipt = () => window.print();
 
   // ==========================================
   // DATA ACTIONS
@@ -345,6 +363,7 @@ function App() {
       ownerId: user.uid,
       admins: [user.uid],
       members: [user.uid],
+      settledDebts: [], // Initialize settled debts array
       createdAt: now,
       lastUpdated: now
     };
@@ -360,16 +379,12 @@ function App() {
 
   const handleJoinTrip = async () => {
     if (!joinCodeInput.trim()) return;
-
     const formattedCode = joinCodeInput.trim().toUpperCase();
-
     try {
       const tripRef = doc(db, "shared_trips", formattedCode);
-
       await updateDoc(tripRef, {
         members: arrayUnion(user.uid)
       });
-
       setJoinCodeInput('');
       alert("Successfully joined the trip!");
     } catch (e) {
@@ -381,10 +396,7 @@ function App() {
   const deleteFolder = async (e, id) => {
     e.stopPropagation();
     const tripToDelete = trips.find(trip => trip.id === id);
-    if (!isTripManager(tripToDelete)) {
-      alert("Only the trip owner or an admin can delete this trip.");
-      return;
-    }
+    if (!isTripManager(tripToDelete)) return alert("Only the trip owner or an admin can delete this trip.");
 
     if (confirm("Delete this entire trip folder for everyone?")) {
       try {
@@ -392,25 +404,18 @@ function App() {
         await deleteDoc(tripDocRef);
       } catch (err) {
         console.error("Error deleting trip: ", err);
-        alert("Failed to delete. You might not have permission.");
       }
     }
   };
 
   const clearAllTrips = async () => {
     if (!user || manageableTrips.length === 0 || isClearingTrips) return;
-
     const tripCount = manageableTrips.length;
     const confirmMessage = `This will permanently delete ${tripCount} trip${tripCount === 1 ? '' : 's'} you own or administer for everyone who has access. Continue?`;
-    const hasFirstConfirmation = window.confirm(confirmMessage);
-    if (!hasFirstConfirmation) return;
+    if (!window.confirm(confirmMessage)) return;
 
     const confirmationPhrase = `CLEAR ${tripCount}`;
-    const typedConfirmation = window.prompt(`Final confirmation: type "${confirmationPhrase}" to delete all trips.`);
-    if (typedConfirmation !== confirmationPhrase) {
-      alert("Clear all trips cancelled. The confirmation phrase did not match.");
-      return;
-    }
+    if (window.prompt(`Final confirmation: type "${confirmationPhrase}" to delete all trips.`) !== confirmationPhrase) return;
 
     setIsClearingTrips(true);
     try {
@@ -425,7 +430,6 @@ function App() {
       setShowBgPicker(null);
     } catch (err) {
       console.error("Error clearing trips: ", err);
-      alert("Failed to clear all trips. You might not have permission.");
     } finally {
       setIsClearingTrips(false);
     }
@@ -436,7 +440,6 @@ function App() {
     await updateTripInCloud(activeTripId, { expenses: updatedExpenses });
   };
 
-  // --- UPDATE TRIP COVER (Dashboard) ---
   const updateTripBackground = async (tripId, bgValue) => {
     try {
       const tripRef = doc(db, "shared_trips", tripId);
@@ -444,18 +447,13 @@ function App() {
       setShowBgPicker(null);
     } catch (e) {
       console.error("Update Error:", e);
-      alert("Could not update background. The image might be too large.");
     }
   };
 
-  // --- FILE UPLOAD HANDLER (Trip Cover) ---
   const handleFileUpload = (e, tripId) => {
     const file = e.target.files[0];
     if (file) {
-      if (file.size > 500000) {
-        alert("Image is too large! Please choose a file smaller than 500KB.");
-        return;
-      }
+      if (file.size > 500000) return alert("Image is too large! Please choose a file smaller than 500KB.");
       const reader = new FileReader();
       reader.onloadend = () => {
         updateTripBackground(tripId, `url(${reader.result})`);
@@ -464,7 +462,6 @@ function App() {
     }
   };
 
-  // --- UPDATE RECEIPT THEME (Detail View) ---
   const updateReceiptTheme = async (themeValue) => {
     if (!activeTrip || !activeLocation) return;
     const updatedThemes = { ...(activeTrip.themes || {}), [activeLocation]: themeValue };
@@ -472,14 +469,28 @@ function App() {
     setShowBgPicker(null);
   };
 
-  // --- EDIT TRIP NAME ---
   const handleSaveTripName = async () => {
     if (!tempTitle.trim()) return setIsEditingTitle(false);
     await updateTripInCloud(activeTripId, { name: tempTitle });
     setIsEditingTitle(false);
   };
 
-  // --- EDIT SAVED EXPENSE (Legacy Single Item Edit) ---
+  // --- SETTLEMENT MARKER ---
+  const toggleSettlement = async (line) => {
+    if (!activeTrip) return;
+    const isSettled = activeTrip.settledDebts?.includes(line);
+    const tripRef = doc(db, "shared_trips", activeTripId);
+
+    try {
+      await updateDoc(tripRef, {
+        settledDebts: isSettled ? arrayRemove(line) : arrayUnion(line)
+      });
+    } catch (e) {
+      console.error("Error updating settlement status:", e);
+    }
+  };
+
+  // --- EDIT SAVED EXPENSE ---
   const editSavedExpense = (expense) => {
     setEditingTripExpenseId(expense.id)
     setReceiptLoc(expense.location)
@@ -502,36 +513,29 @@ function App() {
     setReceiptTip(expense.tipShare.toFixed(2))
     setTaxMode('$')
     setTipMode('$')
-
-    // Important: We are NOT in batch mode here, just single item fix
     setEditingLocationBatch(null);
     setView('receipt_editor')
   }
 
-  // --- SERVERLESS CALCULATION (Connected to Flask Backend) ---
+  // --- CALCULATION ---
   const calculateTripSettlement = async () => {
     if (!activeTrip || activeTrip.expenses.length === 0) return;
     setIsLoading(true);
 
     try {
-      // Send expenses to the Python backend
       const response = await fetch('/api/calculate', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(activeTrip.expenses),
       });
 
-      if (!response.ok) {
-        throw new Error('Network response was not ok');
-      }
+      if (!response.ok) throw new Error('Network response was not ok');
 
       const settlementPlan = await response.json();
       setResults(Array.isArray(settlementPlan) ? settlementPlan : settlementPlan.data || []);
     } catch (error) {
       console.error("Error fetching settlement:", error);
-      alert("Failed to connect to backend. Make sure app.py is running on port 5000!");
+      alert("Failed to connect to backend.");
     } finally {
       setIsLoading(false);
     }
@@ -539,7 +543,7 @@ function App() {
 
   // --- BUILDER ACTIONS ---
   const handleAddOrUpdateItem = () => {
-    if (!itemName || !unitPrice || !itemConsumer) return alert("Fill item details")
+    if (!itemName || !unitPrice || selectedConsumers.length === 0) return alert("Fill item details and select at least one consumer")
     const qty = parseFloat(quantity) || 1
     const price = parseFloat(unitPrice)
     const totalLineCost = price * qty
@@ -548,7 +552,7 @@ function App() {
       qty: qty,
       unitPrice: price,
       totalPrice: totalLineCost,
-      consumers: itemConsumer.split(',').map(n => n.trim())
+      consumers: selectedConsumers
     }
     if (editingIndex !== null) {
       const updated = [...currentItems]
@@ -561,6 +565,7 @@ function App() {
     setItemName('')
     setUnitPrice('')
     setQuantity(1)
+    setSelectedConsumers([])
   }
 
   const startEditingDraftItem = (index) => {
@@ -568,16 +573,14 @@ function App() {
     setItemName(item.name)
     setUnitPrice(item.unitPrice)
     setQuantity(item.qty)
-    setItemConsumer(item.consumers.join(', '))
+    setSelectedConsumers(item.consumers)
     setEditingIndex(index)
   }
 
-  // --- UPDATED SAVE FUNCTION (Handles Batch Overwrite) ---
   const saveReceiptToTrip = async () => {
     if (!receiptLoc || !receiptPayer) return alert("Enter Location and Payer");
     if (currentItems.length === 0) return alert("Add items");
 
-    // 1. Calculate Math (Tax & Tip)
     const subtotal = currentItems.reduce((sum, item) => sum + item.totalPrice, 0);
     let taxTotal = parseFloat(receiptTax) || 0;
     let tipTotal = parseFloat(receiptTip) || 0;
@@ -588,12 +591,11 @@ function App() {
     const taxRate = subtotal > 0 ? (taxTotal / subtotal) : 0;
     const tipRate = subtotal > 0 ? (tipTotal / subtotal) : 0;
 
-    // 2. Map items to Expense Objects
     const newExpenses = currentItems.map(item => {
       const itemTax = item.totalPrice * taxRate;
       const itemTip = item.totalPrice * tipRate;
       return {
-        id: (Date.now() + Math.random()), // Always generate new IDs to avoid conflicts
+        id: (Date.now() + Math.random()),
         item: `${item.qty}x ${item.name}`,
         location: receiptLoc,
         payer: receiptPayer,
@@ -609,17 +611,13 @@ function App() {
       };
     });
 
-    // 3. Update the Shared Trip Document
     try {
       const tripRef = doc(db, "shared_trips", activeTripId);
       let finalExpensesList = activeTrip.expenses;
 
-      // IF EDITING BATCH: Remove ALL old items from this location first
       if (editingLocationBatch) {
         finalExpensesList = finalExpensesList.filter(e => e.location !== editingLocationBatch);
-      }
-      // IF EDITING SINGLE ITEM (Legacy support): Remove just that ID
-      else if (editingTripExpenseId) {
+      } else if (editingTripExpenseId) {
         finalExpensesList = finalExpensesList.filter(e => e.id !== editingTripExpenseId);
       }
 
@@ -631,7 +629,7 @@ function App() {
       setActiveLocation(receiptLoc);
       setView('receipt_detail');
       setEditingTripExpenseId(null);
-      setEditingLocationBatch(null); // Reset batch flag
+      setEditingLocationBatch(null);
     } catch (err) {
       console.error("Save failed:", err);
     }
@@ -711,7 +709,6 @@ function App() {
     )
   }
 
-  // --- AUTHENTICATED APP ---
   return (
     <div className="app-container" onMouseMove={updateBackgroundPosition}>
       <div className="background-glow"></div>
@@ -742,7 +739,6 @@ function App() {
           </div>
 
           <div className="create-bar-container">
-            {/* CREATE NEW TRIP */}
             <div className="action-panel">
               <div className="action-title"><span className="action-icon">+</span>Create Trip</div>
               <div className="create-bar">
@@ -757,7 +753,6 @@ function App() {
               </div>
             </div>
 
-            {/* JOIN EXISTING TRIP */}
             <div className="action-panel">
               <div className="action-title"><span className="action-icon">#</span>Join Trip</div>
               <div className="create-bar">
@@ -777,11 +772,7 @@ function App() {
           <div className="trips-section">
             <div className="trips-section-header">
               <h3 className="section-title">Your Trips</h3>
-              <button
-                className="clear-trips-btn"
-                onClick={clearAllTrips}
-                disabled={manageableTrips.length === 0 || isClearingTrips}
-              >
+              <button className="clear-trips-btn" onClick={clearAllTrips} disabled={manageableTrips.length === 0 || isClearingTrips}>
                 {isClearingTrips ? 'Clearing...' : 'Clear All'}
               </button>
             </div>
@@ -804,13 +795,7 @@ function App() {
                       <div className="home-trip-top">
                         <span className="folder-icon" style={trip.background ? { filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.8))' } : {}}>{tripEmojiMap[trip.id] || '🧳'}</span>
                         <div className="home-trip-actions">
-                          <button
-                            className="delete-btn"
-                            onClick={(e) => { e.stopPropagation(); setShowBgPicker(showBgPicker === trip.id ? null : trip.id); }}
-                            title="Change cover"
-                          >
-                            ✏️
-                          </button>
+                          <button className="delete-btn" onClick={(e) => { e.stopPropagation(); setShowBgPicker(showBgPicker === trip.id ? null : trip.id); }} title="Change cover">✏️</button>
                           {isTripManager(trip) && (
                             <button className="delete-btn" onClick={(e) => deleteFolder(e, trip.id)} title="Delete trip">✕</button>
                           )}
@@ -850,16 +835,8 @@ function App() {
                             <div style={{ height: '1px', background: 'rgba(255,255,255,0.2)', flex: 1 }}></div>
                           </div>
 
-                          <input
-                            type="file"
-                            accept="image/*"
-                            style={{ display: 'none' }}
-                            ref={fileInputRef}
-                            onChange={(e) => handleFileUpload(e, trip.id)}
-                          />
-                          <button className="upload-btn" onClick={() => fileInputRef.current.click()}>
-                            📲 Upload from Device
-                          </button>
+                          <input type="file" accept="image/*" style={{ display: 'none' }} ref={fileInputRef} onChange={(e) => handleFileUpload(e, trip.id)} />
+                          <button className="upload-btn" onClick={() => fileInputRef.current.click()}>📲 Upload from Device</button>
                         </div>
                       </div>
                     )}
@@ -893,28 +870,12 @@ function App() {
             </div>
 
             <div style={{
-              background: 'rgba(255, 255, 255, 0.1)',
-              border: '1px solid rgba(255, 255, 255, 0.2)',
-              padding: '6px 12px',
-              borderRadius: '12px',
-              width: 'fit-content',
-              fontSize: '0.85rem',
-              color: 'var(--primary-glow)',
-              display: 'flex',
-              gap: '8px',
-              alignItems: 'center'
+              background: 'rgba(255, 255, 255, 0.1)', border: '1px solid rgba(255, 255, 255, 0.2)', padding: '6px 12px',
+              borderRadius: '12px', width: 'fit-content', fontSize: '0.85rem', color: 'var(--primary-glow)', display: 'flex', gap: '8px', alignItems: 'center'
             }}>
               <span style={{ opacity: 0.7 }}>Invite Code:</span>
-              <strong style={{ letterSpacing: '1px', color: 'white' }}>
-                {activeTrip.joinCode || '------'}
-              </strong>
-              <span
-                style={{ cursor: 'pointer', marginLeft: '5px' }}
-                onClick={() => navigator.clipboard.writeText(activeTrip.joinCode)}
-                title="Copy Code"
-              >
-                📋
-              </span>
+              <strong style={{ letterSpacing: '1px', color: 'white' }}>{activeTrip.joinCode || '------'}</strong>
+              <span style={{ cursor: 'pointer', marginLeft: '5px' }} onClick={() => navigator.clipboard.writeText(activeTrip.joinCode)} title="Copy Code">📋</span>
             </div>
           </div>
 
@@ -949,12 +910,81 @@ function App() {
                   {isLoading ? 'Calculating...' : 'Calculate Who Owes Who'}
                 </button>
               </div>
+
+              {/* --- GROUPED & INTERACTIVE SETTLEMENTS UI --- */}
               {results.length > 0 && (
-                <div className="card settlement-card">
-                  <h2 style={{ marginTop: 0, color: 'var(--success)' }}>Who Owes Who?</h2>
-                  {results.map((line, idx) => <div key={idx} className="settlement-row">✅ {line}</div>)}
+                <div className="card settlement-card" style={{ padding: '24px' }}>
+                  <h2 style={{ marginTop: 0, color: 'var(--success)', marginBottom: '20px' }}>Final Settlements</h2>
+                  <div style={{ display: 'grid', gap: '20px', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }}>
+                    {Object.entries(
+                      results.reduce((acc, line) => {
+                        const match = line.match(/^(.*?)\s+owes\s+(.*?)\s+\$?(\d+(?:\.\d{1,2})?)/i);
+                        if (match) {
+                          const debtor = match[1];
+                          const creditor = match[2];
+                          const amount = match[3];
+                          if (!acc[creditor]) acc[creditor] = [];
+                          acc[creditor].push({ debtor, amount, line });
+                        } else {
+                          if (!acc['Other']) acc['Other'] = [];
+                          acc['Other'].push({ line });
+                        }
+                        return acc;
+                      }, {})
+                    ).map(([creditorName, debts]) => (
+                      <div key={creditorName} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid var(--glass-border)', borderRadius: '16px', padding: '16px' }}>
+                        <h3 style={{ marginTop: 0, marginBottom: '16px', color: 'var(--success)', borderBottom: '1px solid var(--glass-border)', paddingBottom: '12px', fontSize: '1.1rem' }}>
+                          {creditorName === 'Other' ? 'Other' : `Owed to ${creditorName}:`}
+                        </h3>
+
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                          {debts.map((debt, idx) => {
+                            const isSettled = activeTrip.settledDebts?.includes(debt.line);
+
+                            return (
+                              <div key={idx} style={{
+                                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                                opacity: isSettled ? 0.4 : 1, transition: 'opacity 0.2s'
+                              }}>
+                                {debt.debtor ? (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1 }}>
+                                    <button
+                                      onClick={() => toggleSettlement(debt.line)}
+                                      title={isSettled ? "Mark as unpaid" : "Mark as paid"}
+                                      style={{
+                                        background: isSettled ? 'var(--success)' : 'transparent',
+                                        border: '1px solid var(--success)',
+                                        color: isSettled ? 'white' : 'var(--success)',
+                                        borderRadius: '50%', width: '24px', height: '24px',
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                        cursor: 'pointer', fontSize: '0.8rem', flexShrink: 0
+                                      }}
+                                    >
+                                      {isSettled ? '✓' : ''}
+                                    </button>
+                                    <span style={{ color: 'var(--text-main)', textDecoration: isSettled ? 'line-through' : 'none' }}>
+                                      {debt.debtor}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <span style={{ color: 'var(--text-muted)' }}>{debt.line}</span>
+                                )}
+
+                                {debt.amount && (
+                                  <span style={{ color: 'var(--success)', fontWeight: 'bold', textDecoration: isSettled ? 'line-through' : 'none' }}>
+                                    +${parseFloat(debt.amount).toFixed(2)}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
+
               {activeTrip.expenses.length > 0 && (
                 <div style={{ marginTop: '30px' }}>
                   <h3 style={{ marginBottom: '15px', paddingLeft: '10px' }}>Total Trip Breakdown</h3>
@@ -992,7 +1022,6 @@ function App() {
 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
             <h1 className="header-title" style={{ margin: 0 }}>{activeLocation} <span className="no-print" style={{ fontSize: '0.5em', opacity: 0.5 }}>Receipt</span></h1>
-
             <div className="no-print" style={{ position: 'relative' }}>
               <button className="btn-icon" style={{ width: '36px', height: '36px', fontSize: '1rem', background: 'rgba(255,255,255,0.1)' }} onClick={() => setShowBgPicker(!showBgPicker)}>🎨</button>
               {showBgPicker && (
@@ -1015,23 +1044,15 @@ function App() {
             </div>
           </div>
 
-          {/* --- NEW HIGH VISIBILITY ACTION BAR --- */}
           <div className="action-bar no-print">
-            <button className="btn-action btn-edit" onClick={() => loadReceiptBatch(activeLocation)}>
-              <span>✎</span> Edit / Add Items
-            </button>
-
-            <button className="btn-action btn-pdf" onClick={printReceipt}>
-              <span>📄</span> Save as PDF
-            </button>
-
+            <button className="btn-action btn-edit" onClick={() => loadReceiptBatch(activeLocation)}><span>✎</span> Edit / Add Items</button>
+            <button className="btn-action btn-pdf" onClick={printReceipt}><span>📄</span> Save as PDF</button>
             <label className="btn-action btn-upload">
               <span>📷</span> Upload Photo
               <input type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => handleReceiptImageUpload(e, activeLocation)} />
             </label>
           </div>
 
-          {/* RECEIPT IMAGE DISPLAY */}
           {activeTrip.receiptImages && activeTrip.receiptImages[activeLocation] && (
             <div style={{ marginBottom: '20px', borderRadius: '12px', overflow: 'hidden', border: '1px solid var(--glass-border)', boxShadow: '0 10px 30px rgba(0,0,0,0.3)' }}>
               <img src={activeTrip.receiptImages[activeLocation]} alt="Receipt" style={{ width: '100%', maxHeight: '400px', objectFit: 'contain', background: 'rgba(0,0,0,0.2)', display: 'block' }} />
@@ -1047,7 +1068,6 @@ function App() {
                     <div>
                       <div style={{ fontWeight: 'bold', fontSize: '1rem', color: 'white' }}>{exp.item}</div>
                       <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Shared by: <span style={{ color: 'white' }}>{exp.involved.join(', ')}</span></div>
-                      {/* --- PAID BY SECTION --- */}
                       <div style={{ fontSize: '0.8rem', color: activeReceiptTheme ? '#818cf8' : 'var(--primary-glow)', marginTop: '4px', fontWeight: activeReceiptTheme ? 'bold' : 'normal' }}>
                         Paid by: {exp.payer}
                       </div>
@@ -1064,7 +1084,6 @@ function App() {
               </div>
             </div>
 
-            {/* RIGHT COLUMN: BREAKDOWN */}
             <div>
               <h3 style={{ marginTop: 0, marginBottom: '15px', paddingLeft: '10px' }}>Split Breakdown</h3>
               <div className="breakdown-grid">
@@ -1105,29 +1124,68 @@ function App() {
               <div className="input-group" style={{ flex: 1 }}><label>Location</label><input placeholder="e.g. Cowfish" value={receiptLoc} onChange={e => setReceiptLoc(e.target.value)} /></div>
               <div className="input-group" style={{ flex: 1 }}><label>Payer</label><input placeholder="e.g. Ashton" value={receiptPayer} onChange={e => setReceiptPayer(e.target.value)} /></div>
             </div>
+
             <div style={{ background: 'rgba(255,255,255,0.05)', padding: '20px', borderRadius: '16px', marginBottom: '20px', border: editingIndex !== null ? '1px solid var(--success)' : '1px solid var(--glass-border)' }}>
               <div className="input-row" style={{ display: 'flex', gap: '10px' }}>
                 <div style={{ flex: 0.8 }}><label style={{ fontSize: '0.7rem' }}>Qty</label><input type="number" value={quantity} onChange={e => setQuantity(e.target.value)} style={{ textAlign: 'center' }} /></div>
                 <div style={{ flex: 2 }}><label style={{ fontSize: '0.7rem' }}>Item</label><input placeholder="Item Name" value={itemName} onChange={e => setItemName(e.target.value)} /></div>
                 <div style={{ flex: 1.2 }}><label style={{ fontSize: '0.7rem' }}>Price</label><input type="number" placeholder="0.00" value={unitPrice} onChange={e => setUnitPrice(e.target.value)} /></div>
               </div>
-              <div className="input-group" style={{ marginTop: '15px' }}><label style={{ fontSize: '0.7rem' }}>Consumers</label><input placeholder="Who ate this? (e.g. Ashton, Bob)" value={itemConsumer} onChange={e => setItemConsumer(e.target.value)} /></div>
+
+              <div className="input-group" style={{ marginTop: '15px' }}>
+                <label style={{ fontSize: '0.7rem', marginBottom: '10px' }}>Consumers (Select who ate this)</label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
+                  {allAvailablePeople.map(person => {
+                    const isSelected = selectedConsumers.includes(person);
+                    return (
+                      <div
+                        key={person}
+                        onClick={() => toggleConsumer(person)}
+                        style={{
+                          padding: '8px 14px', borderRadius: '20px',
+                          border: isSelected ? '1px solid var(--primary)' : '1px solid var(--glass-border)',
+                          background: isSelected ? 'var(--primary)' : 'rgba(255,255,255,0.05)',
+                          color: isSelected ? '#ffffff' : 'var(--text-main)',
+                          cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600', transition: 'all 0.2s', userSelect: 'none'
+                        }}
+                      >
+                        {person}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <input
+                    placeholder="Type a new name..." value={newPersonName}
+                    onChange={e => setNewPersonName(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddNewPerson(e); } }}
+                    style={{ padding: '10px', fontSize: '0.9rem' }}
+                  />
+                  <button className="btn btn-primary" style={{ padding: '10px 16px', width: 'auto', fontSize: '0.9rem', borderRadius: '8px' }} onClick={handleAddNewPerson}>Add</button>
+                </div>
+              </div>
+
               <div style={{ marginTop: '15px', display: 'flex', gap: '10px' }}>
                 <button className="btn btn-primary" style={{ padding: '12px', fontSize: '0.9rem', background: editingIndex !== null ? 'var(--success)' : '', width: 'auto' }} onClick={handleAddOrUpdateItem}>
                   {editingIndex !== null ? 'Update Item' : '+ Add Item'}
                 </button>
               </div>
             </div>
+
             {currentItems.length > 0 && (
               <ul style={{ paddingLeft: 0, listStyle: 'none', marginBottom: '20px' }}>
                 {currentItems.map((item, idx) => (
                   <li key={idx} style={{ background: 'rgba(255,255,255,0.05)', padding: '12px', marginBottom: '8px', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div><span style={{ fontWeight: 'bold' }}>{item.qty}x {item.name}</span> <span style={{ color: 'var(--text-muted)' }}>(${item.totalPrice.toFixed(2)})</span></div>
+                    <div>
+                      <span style={{ fontWeight: 'bold' }}>{item.qty}x {item.name}</span> <span style={{ color: 'var(--text-muted)' }}>(${item.totalPrice.toFixed(2)})</span>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--primary-glow)' }}>{item.consumers.join(', ')}</div>
+                    </div>
                     <div style={{ cursor: 'pointer', padding: '5px' }} onClick={() => startEditingDraftItem(idx)}>✎</div>
                   </li>
                 ))}
               </ul>
             )}
+
             <div className="input-row" style={{ display: 'flex', gap: '15px', marginTop: '20px' }}>
               <div className="input-group" style={{ flex: 1 }}><div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}><label>Tax</label><span onClick={() => setTaxMode(taxMode === '$' ? '%' : '$')} style={{ color: 'var(--primary)', cursor: 'pointer', fontWeight: 'bold' }}>{taxMode}</span></div><input type="number" value={receiptTax} onChange={e => setReceiptTax(e.target.value)} /></div>
               <div className="input-group" style={{ flex: 1 }}><div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}><label>Tip</label><span onClick={() => setTipMode(tipMode === '$' ? '%' : '$')} style={{ color: 'var(--primary)', cursor: 'pointer', fontWeight: 'bold' }}>{tipMode}</span></div><input type="number" value={receiptTip} onChange={e => setReceiptTip(e.target.value)} /></div>
