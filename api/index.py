@@ -1,16 +1,14 @@
-from datetime import datetime
-from functools import wraps
-import logging
-from flask_cors import CORS
+from api.settlement import calculate_settlements, Expense
 from flask import Flask, request, jsonify
-from settlement import calculate_settlements, Expense
+from flask_cors import CORS
 import sys
 import os
+import logging
+from functools import wraps
+from datetime import datetime
 
 # 1. Tell Vercel where to look FIRST
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-# 2. THEN import your local files and external libraries
 
 # Configure logging
 logging.basicConfig(
