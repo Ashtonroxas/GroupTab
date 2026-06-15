@@ -643,12 +643,27 @@ function App() {
       const splitTax = exp.taxShare / numPeople
       const splitTip = exp.tipShare / numPeople
       const splitTotal = exp.amount / numPeople
+
+      let displayName = exp.item;
+      if (exp.rawQty && exp.rawName) {
+        // Divide the total quantity by the number of people splitting it
+        const splitQty = exp.rawQty / numPeople;
+
+        // Format to avoid long decimals (e.g., 3 sodas / 2 people = 1.5x)
+        const formattedQty = Number.isInteger(splitQty) ? splitQty : parseFloat(splitQty.toFixed(2));
+        displayName = `${formattedQty}x ${exp.rawName}`;
+      } else {
+        // Fallback for older legacy expenses before rawQty was added
+        const strippedName = exp.item.replace(/^\d+x\s/, '');
+        displayName = `(Split) ${strippedName}`;
+      }
+
       exp.involved.forEach(person => {
         if (!breakdown[person]) {
           breakdown[person] = { items: [], subtotal: 0, tax: 0, tip: 0, grandTotal: 0 }
         }
         breakdown[person].items.push({
-          name: exp.item,
+          name: displayName, // Now uses the dynamically calculated name
           location: exp.location,
           cost: splitPrice
         })
