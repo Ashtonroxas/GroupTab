@@ -374,25 +374,27 @@ function App() {
 
   const printReceipt = () => window.print();
 
-  // ==========================================
   // DATA ACTIONS
-  // ==========================================
   const createFolder = async () => {
     if (!newFolderName.trim()) return;
 
     const generatedCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     const now = new Date();
 
+    // Takes the folder name (e.g., "Madrid 2026") and fetches a scenic photo for it
+    const safeName = encodeURIComponent(newFolderName.trim());
+    const autoBackground = `url(https://image.pollinations.ai/prompt/beautiful%20scenic%20travel%20photography%20of%20${safeName}?width=1280&height=720&nologo=true)`;
+
     const newTrip = {
       name: newFolderName,
       expenses: [],
       themes: {},
-      background: '',
+      background: autoBackground, // Automatically applies the image URL!
       joinCode: generatedCode,
       ownerId: user.uid,
       admins: [user.uid],
       members: [user.uid],
-      settledDebts: [], // Initialize settled debts array
+      settledDebts: [],
       createdAt: now,
       lastUpdated: now
     };
@@ -506,8 +508,18 @@ function App() {
 
   // --- SETTLEMENT MARKER ---
   const toggleSettlement = async (line) => {
-    if (!activeTrip) return;
-    const isSettled = activeTrip.settledDebts?.includes(line);
+    if (!activeTrip || !activeTripId) return;
+
+    // Calculate the new state locally immediately
+    const currentSettled = activeTrip.settledDebts || [];
+    const isSettled = currentSettled.includes(line);
+
+    const updatedSettledDebts = isSettled
+      ? currentSettled.filter(d => d !== line)
+      : [...currentSettled, line];
+
+    activeTrip.settledDebts = updatedSettledDebts;
+
     const tripRef = doc(db, "shared_trips", activeTripId);
 
     try {
@@ -516,6 +528,7 @@ function App() {
       });
     } catch (e) {
       console.error("Error updating settlement status:", e);
+      alert("Could not update settlement. Check internet connection.");
     }
   };
 
