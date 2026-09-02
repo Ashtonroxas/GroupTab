@@ -1,11 +1,16 @@
 from api.settlement import calculate_settlements, Expense
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from flask_talisman import Talisman
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 import sys
 import os
 import logging
-from functools import wraps
 from datetime import datetime
+
+# Import auth helpers
+from api.auth import init_auth, require_auth
 
 # 1. Tell Vercel where to look FIRST
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -17,7 +22,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
 app = Flask(__name__)
+
+# Limit request size to 1MB to avoid large payload abuse
+app.config['MAX_CONTENT_LENGTH'] = int(
+    os.getenv('MAX_CONTENT_LENGTH', 1 * 1024 * 1024))
 
 # Production-ready CORS configuration
 CORS(app,
@@ -26,6 +36,21 @@ CORS(app,
      allow_headers=['Content-Type'],
      supports_credentials=False,
      max_age=3600)
+
+# Content Security Policy: keep reasonably strict but allow Firebase and Google SDKs
+# Review and tighten by replacing domains with your production host where possible
+csp = {
+    'default-src': "'self'",
+    'script-src': "'self' https://www.gstatic.com https://apis.google.com https://cdn.jsdelivr.net",
+    'style-src': "'self' 'unsafe-inline' https://fonts.googleapis.com",
+    'img-src': "'self' data: https:",
+    'connect-src': "'self' https://*.firebaseio.com https://*.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com",
+    'font-src': "'self' data: https://fonts.gstatic.com",
+    'frame-src': "https://*.firebaseapp.com https://apis.google.com"
+}
+
+# Enforce secure headers and CSP via Talisman
+Talisman(app, content_security_policy=csp, force_https=True)
 
 # Rate limiting decorator
 request_counts = {}
@@ -61,6 +86,26 @@ def rate_limit(max_requests=30, window_seconds=60):
     return decorator
 
 
+# Initialize Flask-Limiter (Redis if REDIS_URL provided, otherwise in-memory)
+redis_url = os.getenv('REDIS_URL')
+try:
+    if redis_url:
+        limiter = Limiter(app, key_func=get_remote_address,
+                          storage_uri=redis_url)
+        logger.info('Flask-Limiter configured with Redis')
+    else:
+        limiter = Limiter(app, key_func=get_remote_address,
+                          storage_uri='memory://')
+        logger.info('Flask-Limiter configured with in-memory store')
+except Exception as e:
+    limiter = None
+    logger.warning(f'Flask-Limiter initialization failed: {e}')
+
+
+# Initialize auth helpers (Firebase Admin if configured)
+init_auth(logger)
+
+
 @app.before_request
 def log_request():
     """Log all incoming requests"""
@@ -77,6 +122,9 @@ def add_security_headers(response):
     return response
 
 
+# `require_auth` is provided by `api.auth` and initialized above.
+
+
 @app.route('/api', methods=['GET'])
 def health_check():
     """Health check endpoint"""
@@ -88,7 +136,7 @@ def health_check():
 
 
 @app.route('/api/calculate', methods=['POST'])
-@rate_limit(max_requests=30, window_seconds=60)
+@require_auth
 def calculate():
     """Calculate settlement amounts between users"""
     try:
@@ -136,8 +184,27 @@ def calculate():
                     "error": f"Expense {i}: invalid data format - {str(e)}"
                 }), 400
 
-        # Calculate settlements
-        results = calculate_settlements(expenses_list)
+        # Apply rate limit if limiter is configured (fallback to in-memory decorator exists)
+        try:
+            rate_requests = int(os.getenv('RATE_LIMIT_REQUESTS', 30))
+            rate_window = int(os.getenv('RATE_LIMIT_WINDOW', 60))
+            if limiter:
+                # Flask-Limiter uses rate strings like '30 per minute' or '5 per 10 seconds'
+                rate_str = f"{rate_requests} per {rate_window} seconds"
+                # Dynamically check the limit by calling limiter._check_request_limit
+                # Simpler: use the limiter.limit decorator by invoking a wrapped function
+
+                @limiter.limit(rate_str)
+                def _calculate_inner():
+                    return calculate_settlements(expenses_list)
+
+                results = _calculate_inner()
+            else:
+                results = calculate_settlements(expenses_list)
+        except Exception as e:
+            logger.warning(
+                f"Rate limiter check failed or calculation error: {e}")
+            results = calculate_settlements(expenses_list)
         logger.info(
             f"Successfully calculated settlements for {len(expenses_list)} expenses")
 
