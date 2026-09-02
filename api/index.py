@@ -90,10 +90,12 @@ def rate_limit(max_requests=30, window_seconds=60):
 redis_url = os.getenv('REDIS_URL')
 try:
     if redis_url:
-        limiter = Limiter(app, key_func=get_remote_address, storage_uri=redis_url)
+        limiter = Limiter(app, key_func=get_remote_address,
+                          storage_uri=redis_url)
         logger.info('Flask-Limiter configured with Redis')
     else:
-        limiter = Limiter(app, key_func=get_remote_address, storage_uri='memory://')
+        limiter = Limiter(app, key_func=get_remote_address,
+                          storage_uri='memory://')
         logger.info('Flask-Limiter configured with in-memory store')
 except Exception as e:
     limiter = None
@@ -191,6 +193,7 @@ def calculate():
                 rate_str = f"{rate_requests} per {rate_window} seconds"
                 # Dynamically check the limit by calling limiter._check_request_limit
                 # Simpler: use the limiter.limit decorator by invoking a wrapped function
+
                 @limiter.limit(rate_str)
                 def _calculate_inner():
                     return calculate_settlements(expenses_list)
@@ -199,7 +202,8 @@ def calculate():
             else:
                 results = calculate_settlements(expenses_list)
         except Exception as e:
-            logger.warning(f"Rate limiter check failed or calculation error: {e}")
+            logger.warning(
+                f"Rate limiter check failed or calculation error: {e}")
             results = calculate_settlements(expenses_list)
         logger.info(
             f"Successfully calculated settlements for {len(expenses_list)} expenses")
