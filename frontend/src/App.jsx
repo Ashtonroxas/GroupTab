@@ -565,19 +565,28 @@ function App() {
     setIsLoading(true);
 
     try {
+      // Get Firebase ID token for server-side verification
+      const idToken = user && (await user.getIdToken());
+
+      const headers = { 'Content-Type': 'application/json' };
+      if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+
       const response = await fetch('/api/calculate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(activeTrip.expenses),
       });
 
-      if (!response.ok) throw new Error('Network response was not ok');
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || 'Network response was not ok');
+      }
 
       const settlementPlan = await response.json();
       setResults(Array.isArray(settlementPlan) ? settlementPlan : settlementPlan.data || []);
     } catch (error) {
       console.error("Error fetching settlement:", error);
-      alert("Failed to connect to backend.");
+      alert(error.message || "Failed to connect to backend.");
     } finally {
       setIsLoading(false);
     }

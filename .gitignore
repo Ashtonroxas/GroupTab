@@ -1,4 +1,14 @@
-# Environment variables
+__pycache__/
+*.pyc
+.env
+*.env
+serviceAccount*.json
+node_modules/
+frontend/dist/
+.vscode/
+*.log
+/.pytest_cache
+coverage/# Environment variables
 .env
 .env.local
 .env.*.local
