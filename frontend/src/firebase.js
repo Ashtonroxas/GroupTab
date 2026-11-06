@@ -17,7 +17,11 @@ const missingEnvVars = requiredEnvVars.filter(
   varName => !import.meta.env[varName]
 );
 
-if (missingEnvVars.length > 0) {
+let firebaseConfigurationError = missingEnvVars.length > 0
+  ? `Missing Firebase settings: ${missingEnvVars.join(', ')}`
+  : null;
+
+if (firebaseConfigurationError) {
   console.error(
     `Missing required environment variables: ${missingEnvVars.join(', ')}\n` +
     `Please check your .env file and ensure all Firebase credentials are set.`
@@ -37,25 +41,24 @@ const firebaseConfig = {
 // Initialize Firebase with error handling
 let app, auth, db, storage, googleProvider;
 
-try {
-  app = initializeApp(firebaseConfig);
-  auth = getAuth(app);
-  db = getFirestore(app);
-  storage = getStorage(app);
+if (!firebaseConfigurationError) {
+  try {
+    app = initializeApp(firebaseConfig);
+    auth = getAuth(app);
+    db = getFirestore(app);
+    storage = getStorage(app);
 
-  // Initialize Google Provider AFTER auth is ready
-  googleProvider = new GoogleAuthProvider();
-  googleProvider.addScope('profile');
-  googleProvider.addScope('email');
+    googleProvider = new GoogleAuthProvider();
+    googleProvider.addScope('profile');
+    googleProvider.addScope('email');
 
-  // Configure Auth persistence (async)
-  setPersistence(auth, browserLocalPersistence)
-    .catch(error => console.warn('⚠️ Could not set persistence:', error));
+    setPersistence(auth, browserLocalPersistence)
+      .catch(error => console.warn('Could not set Firebase persistence:', error));
 
-  console.info(' Firebase initialized successfully');
-} catch (error) {
-  console.error(' Failed to initialize Firebase:', error);
-  throw new Error(`Firebase initialization failed: ${error.message}`);
+  } catch (error) {
+    console.error('Failed to initialize Firebase:', error);
+    firebaseConfigurationError = 'Firebase could not start. Verify the Firebase settings for this environment.';
+  }
 }
 
-export { auth, googleProvider, db, storage };
+export { auth, googleProvider, db, storage, firebaseConfigurationError };
