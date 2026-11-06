@@ -100,6 +100,17 @@ service cloud.firestore {
           && request.resource.data.members.size() == resource.data.members.size() + 1;
       }
 
+      function validSelfLeave() {
+        return signedIn()
+          && request.auth.uid in resource.data.members
+          && !(request.auth.uid in request.resource.data.members)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members'])
+          && resource.data.members.hasAll(request.resource.data.members)
+          && request.resource.data.members.size() == resource.data.members.size() - 1
+          && (!resource.data.keys().hasAll(['ownerId']) || resource.data.ownerId != request.auth.uid)
+          && (!resource.data.keys().hasAll(['admins']) || !(request.auth.uid in resource.data.admins));
+      }
+
       function validLegacyOwnershipClaim() {
         return signedIn()
           && !resource.data.keys().hasAll(['ownerId', 'admins'])
@@ -112,7 +123,7 @@ service cloud.firestore {
 
       allow create: if signedIn() && isValidNewTrip();
       allow read: if isMember();
-      allow update: if validMemberUpdate() || validSelfJoin() || validLegacyOwnershipClaim();
+      allow update: if validMemberUpdate() || validSelfJoin() || validSelfLeave() || validLegacyOwnershipClaim();
       allow delete: if isManager();
     }
 

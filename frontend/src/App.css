@@ -136,11 +136,37 @@ input:focus { background: #111827; box-shadow: 0 0 0 3px rgba(37, 99, 235, .24);
 .data-upgrade-card p { color: var(--text-muted); font-size: .9rem; line-height: 1.45; margin: 0; max-width: 640px; }
 .data-upgrade-card .btn { flex-shrink: 0; width: auto; }
 
+.leave-trip-row {
+  align-items: center;
+  color: var(--text-muted);
+  display: flex;
+  font-size: 0.85rem;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding: 0 4px;
+}
+
+.text-danger-button {
+  background: transparent;
+  border: 0;
+  color: #fda4af;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  padding: 6px 4px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.text-danger-button:hover,
+.text-danger-button:focus-visible { color: #fecdd3; }
+
 @media (max-width: 560px) {
   .participant-form { flex-direction: column; }
   .participant-form .btn { width: 100%; }
   .data-upgrade-card { align-items: stretch; flex-direction: column; }
   .data-upgrade-card .btn { width: 100%; }
+  .leave-trip-row { align-items: flex-start; flex-direction: column; gap: 4px; }
 }
 
 

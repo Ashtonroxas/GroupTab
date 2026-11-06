@@ -55,6 +55,16 @@ const getUploadedTripCover = (trip) => {
 const createExpenseId = () => globalThis.crypto?.randomUUID?.()
   || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
+const inviteCodeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const createInviteCode = () => {
+  const values = new Uint32Array(8);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(values);
+    return Array.from(values, value => inviteCodeAlphabet[value % inviteCodeAlphabet.length]).join('');
+  }
+  return Array.from({ length: 8 }, () => inviteCodeAlphabet[Math.floor(Math.random() * inviteCodeAlphabet.length)]).join('');
+};
+
 function NoticeRegion({ notice, onDismiss }) {
   if (!notice) return null;
 
@@ -622,7 +632,7 @@ function App() {
   const createFolder = async () => {
     if (!newFolderName.trim()) return;
 
-    const generatedCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const generatedCode = createInviteCode();
     const now = new Date();
 
     const newTrip = {
@@ -664,6 +674,27 @@ function App() {
       console.error("Join Error:", e);
       showNotice('We could not find that trip. Check the invite code and try again.', 'error');
     }
+  };
+
+  const leaveTrip = () => {
+    if (!activeTrip || isTripManager(activeTrip)) return;
+    setConfirmation({
+      title: `Leave “${activeTrip.name}”?`,
+      message: 'You will lose access to this trip and can only return with its invite code.',
+      confirmLabel: 'Leave trip',
+      onConfirm: async () => {
+        try {
+          await updateDoc(doc(db, 'shared_trips', activeTripId), {
+            members: arrayRemove(user.uid)
+          });
+          goHome();
+          showNotice('You left the trip.', 'success');
+        } catch (error) {
+          console.error('Could not leave trip:', error);
+          showNotice('We could not leave this trip. Please try again.', 'error');
+        }
+      }
+    });
   };
 
   const deleteFolder = async (e, id) => {
@@ -1111,9 +1142,9 @@ function App() {
               <div className="create-bar">
                 <input
                   className="transparent-input"
-                  placeholder="AB1234"
+                  placeholder="AB12CD34"
                   value={joinCodeInput}
-                  maxLength={6}
+                  maxLength={8}
                   onChange={e => setJoinCodeInput(e.target.value.toUpperCase())}
                   onKeyDown={(e) => e.key === 'Enter' && handleJoinTrip(joinCodeInput)}
                 />
@@ -1250,6 +1281,13 @@ function App() {
                 <button className="btn btn-primary" type="submit">Add participant</button>
               </form>
             </section>
+
+            {!isTripManager(activeTrip) && (
+              <div className="leave-trip-row">
+                <span>You are a member of this trip.</span>
+                <button className="text-danger-button" type="button" onClick={leaveTrip}>Leave trip</button>
+              </div>
+            )}
 
             {activeTrip.expenseStorageVersion !== 2 && isTripManager(activeTrip) && (
               <section className="data-upgrade-card">
