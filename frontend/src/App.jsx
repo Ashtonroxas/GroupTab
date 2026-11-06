@@ -16,6 +16,7 @@ import {
   arrayUnion,
   arrayRemove, // Added for un-settling debts
   deleteDoc,
+  increment,
   writeBatch
 } from 'firebase/firestore'
 
@@ -50,6 +51,9 @@ const getUploadedTripCover = (trip) => {
     ? trip.background
     : null;
 };
+
+const createExpenseId = () => globalThis.crypto?.randomUUID?.()
+  || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 function NoticeRegion({ notice, onDismiss }) {
   if (!notice) return null;
@@ -116,6 +120,8 @@ function App() {
   const [tripSort, setTripSort] = useState('newest')
   const [isClearingTrips, setIsClearingTrips] = useState(false)
   const [tripEmojiMap, setTripEmojiMap] = useState({})
+  const [subcollectionExpenses, setSubcollectionExpenses] = useState([])
+  const [isUpgradingExpenses, setIsUpgradingExpenses] = useState(false)
 
   // --- EDITING STATES ---
   const [isEditingTitle, setIsEditingTitle] = useState(false)
@@ -172,6 +178,9 @@ function App() {
   // HELPER: GET DATA
   // ==========================================
   const activeTrip = trips.find(t => t.id === activeTripId)
+  const tripExpenses = activeTrip?.expenseStorageVersion === 2
+    ? subcollectionExpenses
+    : activeTrip?.expenses || [];
   const isTripManager = (trip) => {
     if (!user || !trip) return false;
     if (trip.ownerId) return trip.ownerId === user.uid || trip.admins?.includes(user.uid);
@@ -181,7 +190,7 @@ function App() {
   const getTimestamp = (value) => value?.toMillis?.() || new Date(value || 0).getTime() || 0;
 
   const locationExpenses = activeTrip
-    ? activeTrip.expenses.filter(e => e.location === activeLocation).sort((a, b) => {
+    ? tripExpenses.filter(e => e.location === activeLocation).sort((a, b) => {
       const dateA = a.createdAt instanceof Object ? a.createdAt.toMillis?.() || new Date(a.createdAt).getTime() : new Date(a.createdAt).getTime();
       const dateB = b.createdAt instanceof Object ? b.createdAt.toMillis?.() || new Date(b.createdAt).getTime() : new Date(b.createdAt).getTime();
       return dateB - dateA;
@@ -189,14 +198,14 @@ function App() {
     : []
 
   const tripLocations = activeTrip
-    ? [...new Set(activeTrip.expenses.map(e => e.location))]
+    ? [...new Set(tripExpenses.map(e => e.location))]
     : []
 
   // ==========================================
   // CONSUMER CHIP LOGIC
   // ==========================================
   // 1. Extract raw people and filter out duplicates ignoring case
-  const rawPeople = [...(activeTrip?.participants || []), ...(activeTrip?.expenses?.flatMap(e => [...e.involved, e.payer]) || [])];
+  const rawPeople = [...(activeTrip?.participants || []), ...tripExpenses.flatMap(e => [...e.involved, e.payer])];
   const uniquePeopleMap = new Map();
   rawPeople.forEach(p => {
     if (!uniquePeopleMap.has(p.toLowerCase())) {
@@ -260,6 +269,20 @@ function App() {
       return () => unsub();
     }
   }, [user]);
+
+  useEffect(() => {
+    if (!activeTripId || activeTrip?.expenseStorageVersion !== 2) {
+      setSubcollectionExpenses([]);
+      return undefined;
+    }
+
+    return onSnapshot(collection(db, 'shared_trips', activeTripId, 'expenses'), (snapshot) => {
+      setSubcollectionExpenses(snapshot.docs.map(expenseDoc => ({ id: expenseDoc.id, ...expenseDoc.data() })));
+    }, (error) => {
+      console.error('Expense listener failed:', error);
+      showNotice('Receipt items could not be refreshed. Please try again.', 'error');
+    });
+  }, [activeTripId, activeTrip?.expenseStorageVersion]);
 
   useEffect(() => {
     setTripEmojiMap((currentMap) => {
@@ -357,7 +380,7 @@ function App() {
   // BATCH EDIT, PHOTO RESIZE, PDF
   // ==========================================
   const loadReceiptBatch = (location) => {
-    const batchExpenses = activeTrip.expenses.filter(e => e.location === location);
+    const batchExpenses = tripExpenses.filter(e => e.location === location);
     if (batchExpenses.length === 0) return;
 
     const commonPayer = batchExpenses[0].payer;
@@ -565,6 +588,37 @@ function App() {
   const printReceipt = () => window.print();
 
   // DATA ACTIONS
+  const upgradeTripExpenses = async () => {
+    if (!activeTrip || activeTrip.expenseStorageVersion === 2 || !isTripManager(activeTrip) || isUpgradingExpenses) return;
+    const legacyExpenses = activeTrip.expenses || [];
+    if (legacyExpenses.length > 450) {
+      showNotice('This trip has too many items for a one-step upgrade. Please contact the app owner for a guided migration.', 'error');
+      return;
+    }
+
+    setIsUpgradingExpenses(true);
+    try {
+      const batch = writeBatch(db);
+      legacyExpenses.forEach((expense) => {
+        const expenseId = String(expense.id || createExpenseId());
+        batch.set(doc(db, 'shared_trips', activeTripId, 'expenses', expenseId), { ...expense, id: expenseId });
+      });
+      batch.update(doc(db, 'shared_trips', activeTripId), {
+        expenses: [],
+        expenseStorageVersion: 2,
+        expenseCount: legacyExpenses.length,
+        lastUpdated: new Date()
+      });
+      await batch.commit();
+      showNotice('This trip is ready for safer shared editing.', 'success');
+    } catch (error) {
+      console.error('Trip expense upgrade failed:', error);
+      showNotice('We could not upgrade this trip. Your existing receipts are unchanged.', 'error');
+    } finally {
+      setIsUpgradingExpenses(false);
+    }
+  };
+
   const createFolder = async () => {
     if (!newFolderName.trim()) return;
 
@@ -574,6 +628,8 @@ function App() {
     const newTrip = {
       name: newFolderName,
       expenses: [],
+      expenseStorageVersion: 2,
+      expenseCount: 0,
       joinCode: generatedCode,
       ownerId: user.uid,
       admins: [user.uid],
@@ -666,16 +722,29 @@ function App() {
   };
 
   const deleteExpense = (expenseId) => {
-    const expense = activeTrip?.expenses.find(item => item.id === expenseId);
+    const expense = tripExpenses.find(item => item.id === expenseId);
     if (!expense) return;
     setConfirmation({
       title: 'Remove this item?',
       message: `“${expense.item}” will be removed from ${expense.location}.`,
       confirmLabel: 'Remove item',
       onConfirm: async () => {
-        const updatedExpenses = activeTrip.expenses.filter(item => item.id !== expenseId);
-        const saved = await updateTripInCloud(activeTripId, { expenses: updatedExpenses });
-        if (saved) showNotice('Receipt item removed.', 'success');
+        try {
+          if (activeTrip.expenseStorageVersion === 2) {
+            const batch = writeBatch(db);
+            batch.delete(doc(db, 'shared_trips', activeTripId, 'expenses', String(expenseId)));
+            batch.update(doc(db, 'shared_trips', activeTripId), { expenseCount: increment(-1), lastUpdated: new Date() });
+            await batch.commit();
+            showNotice('Receipt item removed.', 'success');
+            return;
+          }
+          const updatedExpenses = tripExpenses.filter(item => item.id !== expenseId);
+          const saved = await updateTripInCloud(activeTripId, { expenses: updatedExpenses });
+          if (saved) showNotice('Receipt item removed.', 'success');
+        } catch (error) {
+          console.error('Expense removal failed:', error);
+          showNotice('We could not remove that item. Please try again.', 'error');
+        }
       }
     });
   };
@@ -696,7 +765,7 @@ function App() {
 
   const removeTripParticipant = async (name) => {
     if (!activeTrip) return;
-    const isUsed = activeTrip.expenses.some(expense => expense.payer === name || expense.involved.includes(name));
+    const isUsed = tripExpenses.some(expense => expense.payer === name || expense.involved.includes(name));
     if (isUsed) return showNotice(`${name} is included on a receipt and cannot be removed.`, 'error');
     await updateTripInCloud(activeTripId, { participants: (activeTrip.participants || []).filter(person => person !== name) });
   };
@@ -757,7 +826,7 @@ function App() {
 
   // --- CALCULATION ---
   const calculateTripSettlement = async () => {
-    if (!activeTrip || activeTrip.expenses.length === 0) return;
+    if (!activeTrip || tripExpenses.length === 0) return;
     setIsLoading(true);
 
     try {
@@ -770,7 +839,7 @@ function App() {
       const response = await fetch('/api/calculate', {
         method: 'POST',
         headers,
-        body: JSON.stringify(activeTrip.expenses),
+        body: JSON.stringify(tripExpenses),
       });
 
       if (!response.ok) {
@@ -845,7 +914,7 @@ function App() {
       const itemTax = item.totalPrice * taxRate;
       const itemTip = item.totalPrice * tipRate;
       return {
-        id: (Date.now() + Math.random()),
+        id: createExpenseId(),
         item: `${item.qty}x ${item.name}`,
         location: receiptLoc,
         payer: receiptPayer,
@@ -863,7 +932,7 @@ function App() {
 
     try {
       const tripRef = doc(db, "shared_trips", activeTripId);
-      let finalExpensesList = activeTrip.expenses;
+      let finalExpensesList = tripExpenses;
 
       if (editingLocationBatch) {
         finalExpensesList = finalExpensesList.filter(e => e.location !== editingLocationBatch);
@@ -871,10 +940,31 @@ function App() {
         finalExpensesList = finalExpensesList.filter(e => e.id !== editingTripExpenseId);
       }
 
-      await updateDoc(tripRef, {
-        expenses: [...finalExpensesList, ...newExpenses],
-        lastUpdated: new Date()
-      });
+      if (activeTrip.expenseStorageVersion === 2) {
+        const batch = writeBatch(db);
+        const replacedExpenses = editingLocationBatch
+          ? tripExpenses.filter(expense => expense.location === editingLocationBatch)
+          : editingTripExpenseId
+            ? tripExpenses.filter(expense => expense.id === editingTripExpenseId)
+            : [];
+
+        replacedExpenses.forEach((expense) => {
+          batch.delete(doc(db, 'shared_trips', activeTripId, 'expenses', String(expense.id)));
+        });
+        newExpenses.forEach((expense) => {
+          batch.set(doc(db, 'shared_trips', activeTripId, 'expenses', expense.id), expense);
+        });
+        batch.update(tripRef, {
+          expenseCount: increment(newExpenses.length - replacedExpenses.length),
+          lastUpdated: new Date()
+        });
+        await batch.commit();
+      } else {
+        await updateDoc(tripRef, {
+          expenses: [...finalExpensesList, ...newExpenses],
+          lastUpdated: new Date()
+        });
+      }
 
       setActiveLocation(receiptLoc);
       setView('receipt_detail');
@@ -1080,7 +1170,7 @@ function App() {
                       <div className="folder-info">
                         <div className="folder-name">{trip.name}</div>
                         <div className="folder-meta" style={uploadedCover ? { color: '#f1f5f9' } : {}}>
-                          <span>{trip.expenses.length} expenses</span>
+                          <span>{trip.expenseStorageVersion === 2 ? (trip.expenseCount || 0) : (trip.expenses?.length || 0)} expenses</span>
                           <span className="meta-dot">{trip.members?.length || 1} members</span>
                         </div>
                         <div className="folder-date" style={uploadedCover ? { color: '#e2e8f0' } : {}}>
@@ -1160,6 +1250,18 @@ function App() {
                 <button className="btn btn-primary" type="submit">Add participant</button>
               </form>
             </section>
+
+            {activeTrip.expenseStorageVersion !== 2 && isTripManager(activeTrip) && (
+              <section className="data-upgrade-card">
+                <div>
+                  <h2>Improve shared editing</h2>
+                  <p>Upgrade this trip so each receipt item saves independently. Existing receipts stay exactly the same.</p>
+                </div>
+                <button className="btn btn-primary" type="button" onClick={upgradeTripExpenses} disabled={isUpgradingExpenses}>
+                  {isUpgradingExpenses ? 'Upgrading…' : 'Upgrade trip'}
+                </button>
+              </section>
+            )}
           </div>
 
           <div className="layout-grid">
@@ -1205,7 +1307,7 @@ function App() {
               <div className="card">
                 <h2 style={{ marginTop: 0 }}>Final Settlement</h2>
                 <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Calculates net debts across ALL receipts.</p>
-                <button className="btn btn-primary" onClick={calculateTripSettlement} disabled={isLoading || activeTrip.expenses.length === 0}>
+                <button className="btn btn-primary" onClick={calculateTripSettlement} disabled={isLoading || tripExpenses.length === 0}>
                   {isLoading ? 'Calculating...' : 'Calculate Who Owes Who'}
                 </button>
               </div>
@@ -1284,11 +1386,11 @@ function App() {
                 </div>
               )}
 
-              {activeTrip.expenses.length > 0 && (
+              {tripExpenses.length > 0 && (
                 <div style={{ marginTop: '30px' }}>
                   <h3 style={{ marginBottom: '15px', paddingLeft: '10px' }}>Total Trip Breakdown</h3>
                   <div className="breakdown-grid">
-                    {Object.entries(getBreakdown(activeTrip.expenses)).map(([person, data]) => (
+                    {Object.entries(getBreakdown(tripExpenses)).map(([person, data]) => (
                       <div key={person} className="spreadsheet-card">
                         <div className="spreadsheet-header">{person}</div>
                         <div className="spreadsheet-body">

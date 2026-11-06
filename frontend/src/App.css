@@ -120,9 +120,27 @@ input:focus { background: #111827; box-shadow: 0 0 0 3px rgba(37, 99, 235, .24);
 .participant-form input { padding: 10px 12px; }
 .participant-form .btn { padding: 10px 14px; width: auto; white-space: nowrap; }
 
+.data-upgrade-card {
+  align-items: center;
+  background: #17253a;
+  border: 1px solid #315987;
+  border-radius: 12px;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  margin-top: 16px;
+  padding: 16px;
+}
+
+.data-upgrade-card h2 { font-size: 1rem; margin: 0 0 4px; }
+.data-upgrade-card p { color: var(--text-muted); font-size: .9rem; line-height: 1.45; margin: 0; max-width: 640px; }
+.data-upgrade-card .btn { flex-shrink: 0; width: auto; }
+
 @media (max-width: 560px) {
   .participant-form { flex-direction: column; }
   .participant-form .btn { width: 100%; }
+  .data-upgrade-card { align-items: stretch; flex-direction: column; }
+  .data-upgrade-card .btn { width: 100%; }
 }
 
 

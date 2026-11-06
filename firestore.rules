@@ -29,6 +29,8 @@ service cloud.firestore {
           'members',
           'participants',
           'settledDebts',
+          'expenseStorageVersion',
+          'expenseCount',
           'createdAt',
           'lastUpdated'
         ])
@@ -41,6 +43,8 @@ service cloud.firestore {
           'members',
           'participants',
           'settledDebts',
+          'expenseStorageVersion',
+          'expenseCount',
           'createdAt',
           'lastUpdated'
         ])
@@ -51,6 +55,8 @@ service cloud.firestore {
         && request.resource.data.expenses is list
         && request.resource.data.participants is list
         && request.resource.data.settledDebts is list
+        && request.resource.data.expenseStorageVersion == 2
+        && request.resource.data.expenseCount == 0
         && request.resource.data.joinCode is string
         && request.resource.data.name is string
         && request.resource.data.name.size() > 0
@@ -69,6 +75,8 @@ service cloud.firestore {
           'tripCover',
           'participants',
           'settledDebts',
+          'expenseStorageVersion',
+          'expenseCount',
           'lastUpdated'
         ]);
       }
@@ -106,6 +114,17 @@ service cloud.firestore {
       allow read: if isMember();
       allow update: if validMemberUpdate() || validSelfJoin() || validLegacyOwnershipClaim();
       allow delete: if isManager();
+    }
+
+    match /shared_trips/{tripId}/expenses/{expenseId} {
+      function isTripMember() {
+        return request.auth != null
+          && request.auth.uid in firestore.get(
+            /databases/$(database)/documents/shared_trips/$(tripId)
+          ).data.members;
+      }
+
+      allow read, create, update, delete: if isTripMember();
     }
   }
 }
