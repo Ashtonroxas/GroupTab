@@ -4,7 +4,7 @@ import './App.css'
 // --- FIREBASE IMPORTS ---
 import { auth, googleProvider, db, storage } from './firebase'
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage'
+import { deleteObject, getDownloadURL, ref, uploadBytes } from 'firebase/storage'
 import {
   doc,
   setDoc,
@@ -147,6 +147,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(false)
   const [coverUploads, setCoverUploads] = useState({})
   const [tripCoverUploads, setTripCoverUploads] = useState({})
+  const [receiptImageUploads, setReceiptImageUploads] = useState({})
   const [coverEditor, setCoverEditor] = useState(null)
   const [coverCrop, setCoverCrop] = useState({ positionX: 50, positionY: 50, zoom: 1 })
   const [notice, setNotice] = useState(null)
@@ -384,9 +385,10 @@ function App() {
     setView('receipt_editor');
   };
 
-  const resizeImage = (file, maxWidth = 800) => {
-    return new Promise((resolve) => {
+  const prepareReceiptImage = (file, maxWidth = 1600) => {
+    return new Promise((resolve, reject) => {
       const reader = new FileReader();
+      reader.onerror = () => reject(new Error('The image could not be read.'));
       reader.readAsDataURL(file);
       reader.onload = (event) => {
         const img = new Image();
@@ -405,24 +407,47 @@ function App() {
           canvas.height = height;
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img, 0, 0, width, height);
-
-          resolve(canvas.toDataURL('image/jpeg', 0.7));
+          canvas.toBlob((blob) => {
+            if (blob) resolve(blob);
+            else reject(new Error('The image could not be prepared.'));
+          }, 'image/jpeg', 0.82);
         };
+        img.onerror = () => reject(new Error('The image could not be decoded.'));
       };
     });
   };
 
   const handleReceiptImageUpload = async (e, location) => {
-    const file = e.target.files[0];
+    const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
+    if (!activeTrip || receiptImageUploads[location]) return;
+    if (!file.type.startsWith('image/')) return showNotice('Choose an image file for this receipt.', 'error');
     if (file.size > 10000000) return showNotice('Choose an image smaller than 10 MB.', 'error');
+
+    setReceiptImageUploads(current => ({ ...current, [location]: true }));
     try {
-      const resizedBase64 = await resizeImage(file);
-      const updatedImages = { ...(activeTrip.receiptImages || {}), [location]: resizedBase64 };
-      await updateTripInCloud(activeTripId, { receiptImages: updatedImages });
+      const imageBlob = await prepareReceiptImage(file);
+      const path = `shared_trips/${activeTripId}/receipt-photos/${encodeURIComponent(location)}/${Date.now()}.jpg`;
+      const imageRef = ref(storage, path);
+      await uploadBytes(imageRef, imageBlob, { contentType: 'image/jpeg' });
+      const imageUrl = await getDownloadURL(imageRef);
+      const previousPath = activeTrip.receiptImagePaths?.[location];
+      const saved = await updateTripInCloud(activeTripId, {
+        receiptImages: { ...(activeTrip.receiptImages || {}), [location]: imageUrl },
+        receiptImagePaths: { ...(activeTrip.receiptImagePaths || {}), [location]: path }
+      });
+      if (!saved) {
+        await deleteObject(imageRef).catch(() => {});
+        return;
+      }
+      if (previousPath) await deleteObject(ref(storage, previousPath)).catch((error) => console.warn('Previous receipt photo could not be removed:', error));
+      showNotice('Receipt photo uploaded.', 'success');
     } catch (err) {
       console.error("Image upload error:", err);
-      showNotice('We could not process that photo. Please choose another image.', 'error');
+      showNotice('We could not upload that photo. Please choose another image and try again.', 'error');
+    } finally {
+      setReceiptImageUploads(current => ({ ...current, [location]: false }));
     }
   };
 
@@ -434,12 +459,17 @@ function App() {
       confirmLabel: 'Remove photo',
       onConfirm: async () => {
         const updatedImages = { ...(activeTrip.receiptImages || {}) };
+        const updatedPaths = { ...(activeTrip.receiptImagePaths || {}) };
+        const imagePath = updatedPaths[location];
         delete updatedImages[location];
+        delete updatedPaths[location];
         try {
           await updateDoc(doc(db, 'shared_trips', activeTripId), {
             receiptImages: updatedImages,
+            receiptImagePaths: updatedPaths,
             lastUpdated: new Date()
           });
+          if (imagePath) await deleteObject(ref(storage, imagePath)).catch((error) => console.warn('Receipt photo file could not be removed:', error));
           showNotice('Receipt photo removed.', 'success');
         } catch (err) {
           console.error('Receipt photo removal failed:', err);
@@ -1297,8 +1327,8 @@ function App() {
             <button className="btn-action btn-edit" onClick={() => loadReceiptBatch(activeLocation)}><span>✎</span> Edit / Add Items</button>
             <button className="btn-action btn-pdf" onClick={printReceipt}><span>📄</span> Save as PDF</button>
             <label className="btn-action btn-upload">
-              <span>📷</span> Upload Photo
-              <input type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => handleReceiptImageUpload(e, activeLocation)} />
+              <span>📷</span> {receiptImageUploads[activeLocation] ? 'Uploading…' : 'Upload Photo'}
+              <input type="file" accept="image/*" style={{ display: 'none' }} disabled={receiptImageUploads[activeLocation]} onChange={(e) => handleReceiptImageUpload(e, activeLocation)} />
             </label>
             {activeTrip.receiptImages?.[activeLocation] && (
               <button className="btn-action btn-remove-photo" onClick={() => removeReceiptImage(activeLocation)}><span>×</span> Remove Photo</button>
