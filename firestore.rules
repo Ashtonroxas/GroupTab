@@ -23,24 +23,24 @@ service cloud.firestore {
         return request.resource.data.keys().hasAll([
           'name',
           'expenses',
-          'themes',
-          'background',
           'joinCode',
           'ownerId',
           'admins',
           'members',
+          'participants',
+          'settledDebts',
           'createdAt',
           'lastUpdated'
         ])
         && request.resource.data.keys().hasOnly([
           'name',
           'expenses',
-          'themes',
-          'background',
           'joinCode',
           'ownerId',
           'admins',
           'members',
+          'participants',
+          'settledDebts',
           'createdAt',
           'lastUpdated'
         ])
@@ -49,8 +49,8 @@ service cloud.firestore {
         && request.resource.data.admins == [request.auth.uid]
         && request.resource.data.members == [request.auth.uid]
         && request.resource.data.expenses is list
-        && request.resource.data.themes is map
-        && request.resource.data.background is string
+        && request.resource.data.participants is list
+        && request.resource.data.settledDebts is list
         && request.resource.data.joinCode is string
         && request.resource.data.name is string
         && request.resource.data.name.size() > 0
@@ -61,9 +61,12 @@ service cloud.firestore {
         return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'name',
           'expenses',
-          'themes',
-          'background',
           'receiptImages',
+          'receiptCovers',
+          'receiptCoverSettings',
+          'tripCover',
+          'participants',
+          'settledDebts',
           'lastUpdated'
         ]);
       }

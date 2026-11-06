@@ -1,19 +1,23 @@
+import sys
+import os
+import logging
+from datetime import datetime
+from functools import wraps
+
+# Support both Vercel's package import and `python api/index.py` locally.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from api.settlement import calculate_settlements, Expense
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_talisman import Talisman
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-import sys
-import os
-import logging
-from datetime import datetime
 
 # Import auth helpers
 from api.auth import init_auth, require_auth
-
-# 1. Tell Vercel where to look FIRST
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Configure logging
 logging.basicConfig(
@@ -49,8 +53,10 @@ csp = {
     'frame-src': "https://*.firebaseapp.com https://apis.google.com"
 }
 
-# Enforce secure headers and CSP via Talisman
-Talisman(app, content_security_policy=csp, force_https=True)
+# Enforce secure headers and CSP via Talisman.
+# Allow HTTP on localhost so the API can be tested locally without redirecting.
+Talisman(app, content_security_policy=csp,
+         force_https=os.getenv('FLASK_ENV') != 'development')
 
 # Rate limiting decorator
 request_counts = {}

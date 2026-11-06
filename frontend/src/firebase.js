@@ -1,6 +1,7 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider, setPersistence, browserLocalPersistence } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
+import { getStorage } from "firebase/storage";
 
 // Validate required environment variables
 const requiredEnvVars = [
@@ -34,12 +35,13 @@ const firebaseConfig = {
 };
 
 // Initialize Firebase with error handling
-let app, auth, db, googleProvider;
+let app, auth, db, storage, googleProvider;
 
 try {
   app = initializeApp(firebaseConfig);
   auth = getAuth(app);
   db = getFirestore(app);
+  storage = getStorage(app);
 
   // Initialize Google Provider AFTER auth is ready
   googleProvider = new GoogleAuthProvider();
@@ -56,4 +58,4 @@ try {
   throw new Error(`Firebase initialization failed: ${error.message}`);
 }
 
-export { auth, googleProvider, db };
+export { auth, googleProvider, db, storage };
