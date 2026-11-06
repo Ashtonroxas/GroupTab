@@ -160,6 +160,7 @@ function App() {
 
   // Results
   const [results, setResults] = useState([])
+  const [hasCalculated, setHasCalculated] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [coverUploads, setCoverUploads] = useState({})
   const [tripCoverUploads, setTripCoverUploads] = useState({})
@@ -363,6 +364,7 @@ function App() {
     setActiveTripId(id)
     setView('trip_view')
     setResults([])
+    setHasCalculated(false)
   }
 
   const openLocationTab = (location) => {
@@ -766,12 +768,18 @@ function App() {
             batch.delete(doc(db, 'shared_trips', activeTripId, 'expenses', String(expenseId)));
             batch.update(doc(db, 'shared_trips', activeTripId), { expenseCount: increment(-1), lastUpdated: new Date() });
             await batch.commit();
+            setResults([]);
+            setHasCalculated(false);
             showNotice('Receipt item removed.', 'success');
             return;
           }
           const updatedExpenses = tripExpenses.filter(item => item.id !== expenseId);
           const saved = await updateTripInCloud(activeTripId, { expenses: updatedExpenses });
-          if (saved) showNotice('Receipt item removed.', 'success');
+          if (saved) {
+            setResults([]);
+            setHasCalculated(false);
+            showNotice('Receipt item removed.', 'success');
+          }
         } catch (error) {
           console.error('Expense removal failed:', error);
           showNotice('We could not remove that item. Please try again.', 'error');
@@ -808,18 +816,22 @@ function App() {
   };
 
   // --- SETTLEMENT MARKER ---
-  const toggleSettlement = async (line) => {
+  const toggleSettlement = async (settlement) => {
     if (!activeTrip || !activeTripId) return;
 
-    // Calculate the new state locally immediately
     const currentSettled = activeTrip.settledDebts || [];
-    const isSettled = currentSettled.includes(line);
+    const settledKey = currentSettled.includes(settlement.id)
+      ? settlement.id
+      : currentSettled.includes(settlement.legacyLine)
+        ? settlement.legacyLine
+        : null;
+    const isSettled = Boolean(settledKey);
 
     const tripRef = doc(db, "shared_trips", activeTripId);
 
     try {
       await updateDoc(tripRef, {
-        settledDebts: isSettled ? arrayRemove(line) : arrayUnion(line)
+        settledDebts: isSettled ? arrayRemove(settledKey) : arrayUnion(settlement.id)
       });
       showNotice(isSettled ? 'Marked as unpaid.' : 'Marked as paid.', 'success');
     } catch (e) {
@@ -880,6 +892,7 @@ function App() {
 
       const settlementPlan = await response.json();
       setResults(Array.isArray(settlementPlan) ? settlementPlan : settlementPlan.data || []);
+      setHasCalculated(true);
     } catch (error) {
       console.error("Error fetching settlement:", error);
       showNotice(error.message || 'We could not calculate settlements. Please try again.', 'error');
@@ -999,6 +1012,8 @@ function App() {
 
       setActiveLocation(receiptLoc);
       setView('receipt_detail');
+      setResults([]);
+      setHasCalculated(false);
       setEditingTripExpenseId(null);
       setEditingLocationBatch(null);
       showNotice(editingTripExpenseId || editingLocationBatch ? 'Receipt changes saved.' : 'Receipt saved.', 'success');
@@ -1350,77 +1365,57 @@ function App() {
                 </button>
               </div>
 
-              {/* --- GROUPED & INTERACTIVE SETTLEMENTS UI --- */}
-              {results.length > 0 && (
+              {hasCalculated && (
                 <div className="card settlement-card" style={{ padding: '24px' }}>
                   <h2 style={{ marginTop: 0, color: 'var(--success)', marginBottom: '20px' }}>Final Settlements</h2>
-                  <div style={{ display: 'grid', gap: '20px', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }}>
-                    {Object.entries(
-                      results.reduce((acc, line) => {
-                        const match = line.match(/^(.*?)\s+owes\s+(.*?)\s+\$?(\d+(?:\.\d{1,2})?)/i);
-                        if (match) {
-                          const debtor = match[1];
-                          const creditor = match[2];
-                          const amount = match[3];
-                          if (!acc[creditor]) acc[creditor] = [];
-                          acc[creditor].push({ debtor, amount, line });
-                        } else {
-                          if (!acc['Other']) acc['Other'] = [];
-                          acc['Other'].push({ line });
-                        }
-                        return acc;
-                      }, {})
-                    ).map(([creditorName, debts]) => (
+                  {results.length === 0 ? (
+                    <p className="settled-empty-state">Everyone is settled up. No payments are needed.</p>
+                  ) : (
+                    <div style={{ display: 'grid', gap: '20px', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }}>
+                    {Object.entries(results.reduce((groups, settlement) => {
+                      if (!groups[settlement.creditor]) groups[settlement.creditor] = [];
+                      groups[settlement.creditor].push(settlement);
+                      return groups;
+                    }, {})).map(([creditorName, debts]) => (
                       <div key={creditorName} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid var(--glass-border)', borderRadius: '16px', padding: '16px' }}>
                         <h3 style={{ marginTop: 0, marginBottom: '16px', color: 'var(--success)', borderBottom: '1px solid var(--glass-border)', paddingBottom: '12px', fontSize: '1.1rem' }}>
-                          {creditorName === 'Other' ? 'Other' : `Owed to ${creditorName}:`}
+                          Owed to {creditorName}
                         </h3>
 
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                          {debts.map((debt, idx) => {
-                            const isSettled = activeTrip.settledDebts?.includes(debt.line);
+                          {debts.map((debt) => {
+                            const isSettled = activeTrip.settledDebts?.includes(debt.id) || activeTrip.settledDebts?.includes(debt.legacyLine);
 
                             return (
-                              <div key={idx} style={{
+                              <div key={debt.id} style={{
                                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                                 opacity: isSettled ? 0.4 : 1, transition: 'opacity 0.2s'
                               }}>
-                                {debt.debtor ? (
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1 }}>
-                                    <button
-                                      onClick={() => toggleSettlement(debt.line)}
-                                      title={isSettled ? "Mark as unpaid" : "Mark as paid"}
-                                      style={{
-                                        background: isSettled ? 'var(--success)' : 'transparent',
-                                        border: '1px solid var(--success)',
-                                        color: isSettled ? 'white' : 'var(--success)',
-                                        borderRadius: '50%', width: '24px', height: '24px',
-                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                        cursor: 'pointer', fontSize: '0.8rem', flexShrink: 0
-                                      }}
-                                    >
-                                      {isSettled ? '✓' : ''}
-                                    </button>
-                                    <span style={{ color: 'var(--text-main)', textDecoration: isSettled ? 'line-through' : 'none' }}>
-                                      {debt.debtor}
-                                    </span>
-                                  </div>
-                                ) : (
-                                  <span style={{ color: 'var(--text-muted)' }}>{debt.line}</span>
-                                )}
-
-                                {debt.amount && (
-                                  <span style={{ color: 'var(--success)', fontWeight: 'bold', textDecoration: isSettled ? 'line-through' : 'none' }}>
-                                    +${parseFloat(debt.amount).toFixed(2)}
-                                  </span>
-                                )}
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1 }}>
+                                  <button
+                                    onClick={() => toggleSettlement(debt)}
+                                    title={isSettled ? "Mark as unpaid" : "Mark as paid"}
+                                    aria-label={`${isSettled ? 'Mark unpaid' : 'Mark paid'}: ${debt.debtor} owes ${debt.creditor} $${debt.amount.toFixed(2)}`}
+                                    style={{
+                                      background: isSettled ? 'var(--success)' : 'transparent',
+                                      border: '1px solid var(--success)',
+                                      color: isSettled ? 'white' : 'var(--success)',
+                                      borderRadius: '50%', width: '24px', height: '24px',
+                                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                      cursor: 'pointer', fontSize: '0.8rem', flexShrink: 0
+                                    }}
+                                  >{isSettled ? '✓' : ''}</button>
+                                  <span style={{ color: 'var(--text-main)', textDecoration: isSettled ? 'line-through' : 'none' }}>{debt.debtor}</span>
+                                </div>
+                                <span style={{ color: 'var(--success)', fontWeight: 'bold', textDecoration: isSettled ? 'line-through' : 'none' }}>${debt.amount.toFixed(2)}</span>
                               </div>
                             );
                           })}
                         </div>
                       </div>
                     ))}
-                  </div>
+                    </div>
+                  )}
                 </div>
               )}
 
