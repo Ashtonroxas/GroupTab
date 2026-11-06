@@ -89,6 +89,9 @@ def init_auth(app_logger=None):
                 return True
         except Exception:
             logger.exception('Failed to initialize Firebase Admin')
+    elif service_account_json or service_account_file:
+        logger.warning(
+            'Firebase Admin SDK not installed; server-side auth verification disabled')
 
     # Fallback: require FIREBASE_PROJECT_ID for pyjwt verification
     project_id = os.getenv('FIREBASE_PROJECT_ID')
@@ -158,8 +161,10 @@ def require_auth(f):
 
     @wraps(f)
     def decorated(*args, **kwargs):
-        # Allow local development without tokens
-        if os.getenv('FLASK_ENV') == 'development':
+        # Allow local development without tokens.
+        # This prevents localhost debugging from being blocked by missing server creds.
+        host = request.host or ''
+        if os.getenv('FLASK_ENV') == 'development' or host.startswith('localhost') or host.startswith('127.0.0.1'):
             return f(*args, **kwargs)
 
         # Prefer Firebase ID token verification via firebase-admin if available

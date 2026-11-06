@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import './App.css'
 
 // --- FIREBASE IMPORTS ---
-import { auth, googleProvider, db } from './firebase'
+import { auth, googleProvider, db, storage } from './firebase'
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
+import { getDownloadURL, ref, uploadBytes } from 'firebase/storage'
 import {
   doc,
   setDoc,
@@ -30,13 +31,20 @@ const GoogleIcon = () => (
 
 const tripCardEmojis = ['🧳', '🌎', '🏝️', '🏔️', '🏙️', '🗺️', '🚗', '🚆', '🚢', '🏕️', '🌅', '📍'];
 
+// Legacy trip covers share a field with the removed AI backgrounds. Keep only
+// device-uploaded image data and deliberately ignore remote/generated URLs.
+const getUploadedTripCover = (trip) => {
+  if (typeof trip.tripCover === 'string' && trip.tripCover.startsWith('https://')) {
+    return `url("${trip.tripCover}")`;
+  }
+  return typeof trip.background === 'string' && trip.background.startsWith('url(data:image/')
+    ? trip.background
+    : null;
+};
+
 function App() {
   // --- USER STATE ---
   const [user, setUser] = useState(null)
-
-  // --- ERROR STATE ---
-  const [error, setError] = useState(null)
-  const [successMessage, setSuccessMessage] = useState(null)
 
   // --- NAVIGATION STATE ---
   const [view, setView] = useState('login')
@@ -47,17 +55,13 @@ function App() {
   const [trips, setTrips] = useState([])
   const [newFolderName, setNewFolderName] = useState('')
   const [joinCodeInput, setJoinCodeInput] = useState('');
+  const [tripSort, setTripSort] = useState('newest')
   const [isClearingTrips, setIsClearingTrips] = useState(false)
   const [tripEmojiMap, setTripEmojiMap] = useState({})
 
   // --- EDITING STATES ---
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [tempTitle, setTempTitle] = useState('')
-
-  // --- BACKGROUND PICKER STATE ---
-  const [showBgPicker, setShowBgPicker] = useState(null)
-  const [customImageUrl, setCustomImageUrl] = useState('')
-  const fileInputRef = useRef(null)
 
   // --- RECEIPT BUILDER STATE ---
   const [receiptLoc, setReceiptLoc] = useState('')
@@ -75,6 +79,7 @@ function App() {
   const [selectedConsumers, setSelectedConsumers] = useState([])
   const [sessionPeople, setSessionPeople] = useState([])
   const [newPersonName, setNewPersonName] = useState('')
+  const [newParticipantName, setNewParticipantName] = useState('')
   const [hoveredChip, setHoveredChip] = useState(null) // NEW: Tracks which chip is being hovered
 
   // EDITING EXPENSE STATE
@@ -85,6 +90,10 @@ function App() {
   // Results
   const [results, setResults] = useState([])
   const [isLoading, setIsLoading] = useState(false)
+  const [coverUploads, setCoverUploads] = useState({})
+  const [tripCoverUploads, setTripCoverUploads] = useState({})
+  const [coverEditor, setCoverEditor] = useState(null)
+  const [coverCrop, setCoverCrop] = useState({ positionX: 50, positionY: 50, zoom: 1 })
 
   // ==========================================
   // HELPER: GET DATA
@@ -96,6 +105,7 @@ function App() {
     return trip.members?.[0] === user.uid;
   };
   const manageableTrips = trips.filter(isTripManager);
+  const getTimestamp = (value) => value?.toMillis?.() || new Date(value || 0).getTime() || 0;
 
   const locationExpenses = activeTrip
     ? activeTrip.expenses.filter(e => e.location === activeLocation).sort((a, b) => {
@@ -109,13 +119,11 @@ function App() {
     ? [...new Set(activeTrip.expenses.map(e => e.location))]
     : []
 
-  const activeReceiptTheme = activeTrip?.themes?.[activeLocation] || null;
-
   // ==========================================
   // CONSUMER CHIP LOGIC
   // ==========================================
   // 1. Extract raw people and filter out duplicates ignoring case
-  const rawPeople = activeTrip?.expenses?.flatMap(e => e.involved) || [];
+  const rawPeople = [...(activeTrip?.participants || []), ...(activeTrip?.expenses?.flatMap(e => [...e.involved, e.payer]) || [])];
   const uniquePeopleMap = new Map();
   rawPeople.forEach(p => {
     if (!uniquePeopleMap.has(p.toLowerCase())) {
@@ -265,7 +273,6 @@ function App() {
     setView('dashboard')
     setActiveTripId(null)
     setActiveLocation(null)
-    setShowBgPicker(null)
     setEditingLocationBatch(null)
   }
 
@@ -372,6 +379,91 @@ function App() {
     }
   };
 
+  const removeReceiptImage = async (location) => {
+    if (!activeTrip || !window.confirm('Remove this receipt photo? This cannot be undone.')) return;
+    const updatedImages = { ...(activeTrip.receiptImages || {}) };
+    delete updatedImages[location];
+    try {
+      await updateDoc(doc(db, 'shared_trips', activeTripId), {
+        receiptImages: updatedImages,
+        lastUpdated: new Date()
+      });
+    } catch (err) {
+      console.error('Receipt photo removal failed:', err);
+      alert('Could not remove the receipt photo. Please try again.');
+    }
+  };
+
+  const handleTripCoverUpload = async (event, trip) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) return alert('Please choose an image file.');
+    if (file.size > 10 * 1024 * 1024) return alert('Please choose an image smaller than 10 MB.');
+
+    setTripCoverUploads(current => ({ ...current, [trip.id]: true }));
+    try {
+      const path = `shared_trips/${trip.id}/trip-covers/${Date.now()}`;
+      const fileRef = ref(storage, path);
+      await uploadBytes(fileRef, file, { contentType: file.type });
+      const coverUrl = await getDownloadURL(fileRef);
+      await updateDoc(doc(db, 'shared_trips', trip.id), {
+        tripCover: coverUrl,
+        lastUpdated: new Date()
+      });
+    } catch (err) {
+      console.error('Trip cover upload failed:', err);
+      alert('Could not upload the trip cover. Make sure Firebase Storage is enabled and its rules are published.');
+    } finally {
+      setTripCoverUploads(current => ({ ...current, [trip.id]: false }));
+    }
+  };
+
+  const closeCoverEditor = () => {
+    if (coverEditor?.previewUrl) URL.revokeObjectURL(coverEditor.previewUrl);
+    setCoverEditor(null);
+  };
+
+  const openReceiptCoverEditor = (event, location) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) return alert('Please choose an image file.');
+    if (file.size > 10 * 1024 * 1024) return alert('Please choose an image smaller than 10 MB.');
+
+    const savedCrop = activeTrip?.receiptCoverSettings?.[location];
+    setCoverCrop({
+      positionX: savedCrop?.positionX ?? 50,
+      positionY: savedCrop?.positionY ?? 50,
+      zoom: savedCrop?.zoom ?? 1
+    });
+    setCoverEditor({ file, location, previewUrl: URL.createObjectURL(file) });
+  };
+
+  const uploadReceiptCover = async () => {
+    if (!coverEditor || !activeTrip) return;
+    const { file, location } = coverEditor;
+
+    setCoverUploads(current => ({ ...current, [location]: true }));
+    try {
+      const path = `shared_trips/${activeTripId}/receipt-covers/${encodeURIComponent(location)}/${Date.now()}`;
+      const fileRef = ref(storage, path);
+      await uploadBytes(fileRef, file, { contentType: file.type });
+      const coverUrl = await getDownloadURL(fileRef);
+      await updateDoc(doc(db, 'shared_trips', activeTripId), {
+        receiptCovers: { ...(activeTrip.receiptCovers || {}), [location]: coverUrl },
+        receiptCoverSettings: { ...(activeTrip.receiptCoverSettings || {}), [location]: coverCrop },
+        lastUpdated: new Date()
+      });
+      closeCoverEditor();
+    } catch (err) {
+      console.error('Receipt cover upload failed:', err);
+      alert('Could not upload the receipt cover. Make sure Firebase Storage is enabled and its rules are published.');
+    } finally {
+      setCoverUploads(current => ({ ...current, [location]: false }));
+    }
+  };
+
   const printReceipt = () => window.print();
 
   // DATA ACTIONS
@@ -381,19 +473,14 @@ function App() {
     const generatedCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     const now = new Date();
 
-    // Takes the folder name (e.g., "Madrid 2026") and fetches a scenic photo for it
-    const safeName = encodeURIComponent(newFolderName.trim());
-    const autoBackground = `url(https://image.pollinations.ai/prompt/beautiful%20scenic%20travel%20photography%20of%20${safeName}?width=1280&height=720&nologo=true)`;
-
     const newTrip = {
       name: newFolderName,
       expenses: [],
-      themes: {},
-      background: autoBackground, // Automatically applies the image URL!
       joinCode: generatedCode,
       ownerId: user.uid,
       admins: [user.uid],
       members: [user.uid],
+      participants: [user.displayName?.split(' ')[0] || 'Me'],
       settledDebts: [],
       createdAt: now,
       lastUpdated: now
@@ -458,7 +545,6 @@ function App() {
         });
         await batch.commit();
       }
-      setShowBgPicker(null);
     } catch (err) {
       console.error("Error clearing trips: ", err);
     } finally {
@@ -471,33 +557,25 @@ function App() {
     await updateTripInCloud(activeTripId, { expenses: updatedExpenses });
   };
 
-  const updateTripBackground = async (tripId, bgValue) => {
-    try {
-      const tripRef = doc(db, "shared_trips", tripId);
-      await updateDoc(tripRef, { background: bgValue });
-      setShowBgPicker(null);
-    } catch (e) {
-      console.error("Update Error:", e);
+  const addTripParticipant = async (event) => {
+    event.preventDefault();
+    if (!activeTrip || !newParticipantName.trim()) return;
+    const name = newParticipantName.trim().split(/\s+/).map(word =>
+      word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+    ).join(' ');
+    if ((activeTrip.participants || []).some(person => person.toLowerCase() === name.toLowerCase())) {
+      setNewParticipantName('');
+      return;
     }
+    await updateTripInCloud(activeTripId, { participants: [...(activeTrip.participants || []), name] });
+    setNewParticipantName('');
   };
 
-  const handleFileUpload = (e, tripId) => {
-    const file = e.target.files[0];
-    if (file) {
-      if (file.size > 500000) return alert("Image is too large! Please choose a file smaller than 500KB.");
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        updateTripBackground(tripId, `url(${reader.result})`);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const updateReceiptTheme = async (themeValue) => {
-    if (!activeTrip || !activeLocation) return;
-    const updatedThemes = { ...(activeTrip.themes || {}), [activeLocation]: themeValue };
-    await updateTripInCloud(activeTripId, { themes: updatedThemes });
-    setShowBgPicker(null);
+  const removeTripParticipant = async (name) => {
+    if (!activeTrip) return;
+    const isUsed = activeTrip.expenses.some(expense => expense.payer === name || expense.involved.includes(name));
+    if (isUsed) return alert(`${name} is used on a receipt and cannot be removed.`);
+    await updateTripInCloud(activeTripId, { participants: (activeTrip.participants || []).filter(person => person !== name) });
   };
 
   const handleSaveTripName = async () => {
@@ -727,13 +805,6 @@ function App() {
     return breakdown
   }
 
-  const updateBackgroundPosition = (e) => {
-    const x = `${(e.clientX / window.innerWidth) * 100}%`;
-    const y = `${(e.clientY / window.innerHeight) * 100}%`;
-    document.documentElement.style.setProperty('--cursor-x', x);
-    document.documentElement.style.setProperty('--cursor-y', y);
-  };
-
   // ##########################################
   // MAIN RENDER
   // ##########################################
@@ -776,8 +847,7 @@ function App() {
   }
 
   return (
-    <div className="app-container" onMouseMove={updateBackgroundPosition}>
-      <div className="background-glow"></div>
+    <div className="app-container">
 
       {/* HEADER */}
       <div className="no-print" style={{ marginBottom: '20px', borderBottom: '1px solid var(--glass-border)', paddingBottom: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -838,30 +908,43 @@ function App() {
           <div className="trips-section">
             <div className="trips-section-header">
               <h3 className="section-title">Your Trips</h3>
-              <button className="clear-trips-btn" onClick={clearAllTrips} disabled={manageableTrips.length === 0 || isClearingTrips}>
-                {isClearingTrips ? 'Clearing...' : 'Clear All'}
-              </button>
+              <div className="trips-toolbar">
+                <label className="trip-sort-label">Sort
+                  <select value={tripSort} onChange={event => setTripSort(event.target.value)}>
+                    <option value="newest">Newest created</option>
+                    <option value="oldest">Oldest created</option>
+                  </select>
+                </label>
+                <button className="clear-trips-btn" onClick={clearAllTrips} disabled={manageableTrips.length === 0 || isClearingTrips}>
+                  {isClearingTrips ? 'Clearing...' : 'Clear All'}
+                </button>
+              </div>
             </div>
             {trips.length === 0 ? (
               <div className="empty-state"><div className="empty-icon"></div><p>No trips yet. Type a destination above to get started!</p></div>
             ) : (
               <div className="home-trip-grid">
                 {[...trips].sort((a, b) => {
-                  const dateA = a.lastUpdated instanceof Object ? a.lastUpdated.toMillis?.() || new Date(a.lastUpdated).getTime() : new Date(a.lastUpdated).getTime();
-                  const dateB = b.lastUpdated instanceof Object ? b.lastUpdated.toMillis?.() || new Date(b.lastUpdated).getTime() : new Date(b.lastUpdated).getTime();
-                  return dateB - dateA;
+                  const difference = getTimestamp(b.createdAt) - getTimestamp(a.createdAt);
+                  return tripSort === 'newest' ? difference : -difference;
                 }).map(trip => (
+                  (() => {
+                    const uploadedCover = getUploadedTripCover(trip);
+                    return (
                   <div
                     key={trip.id}
-                    className="folder-card home-trip-card"
+                    className={`folder-card home-trip-card${uploadedCover ? ' has-uploaded-cover' : ''}`}
                     onClick={() => openTrip(trip.id)}
-                    style={trip.background ? { backgroundImage: trip.background, backgroundSize: 'cover', backgroundPosition: 'center' } : {}}
+                    style={uploadedCover ? { backgroundImage: uploadedCover, backgroundSize: 'cover', backgroundPosition: 'center' } : {}}
                   >
-                    <div className="folder-content" style={trip.background ? { textShadow: '0 2px 4px rgba(0,0,0,0.8)' } : {}}>
+                    <div className="folder-content" style={uploadedCover ? { textShadow: '0 1px 3px rgba(0,0,0,.85)' } : {}}>
                       <div className="home-trip-top">
-                        <span className="folder-icon" style={trip.background ? { filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.8))' } : {}}>{tripEmojiMap[trip.id] || '🧳'}</span>
+                        <span className="folder-icon" style={uploadedCover ? { filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.7))' } : {}}>{tripEmojiMap[trip.id] || '🧳'}</span>
                         <div className="home-trip-actions">
-                          <button className="delete-btn" onClick={(e) => { e.stopPropagation(); setShowBgPicker(showBgPicker === trip.id ? null : trip.id); }} title="Change cover">✏️</button>
+                          <label className="trip-cover-button" onClick={event => event.stopPropagation()}>
+                            <input type="file" accept="image/*" onChange={event => handleTripCoverUpload(event, trip)} />
+                            {tripCoverUploads[trip.id] ? 'Uploading…' : uploadedCover ? 'Update cover' : 'Add cover'}
+                          </label>
                           {isTripManager(trip) && (
                             <button className="delete-btn" onClick={(e) => deleteFolder(e, trip.id)} title="Delete trip">✕</button>
                           )}
@@ -869,44 +952,19 @@ function App() {
                       </div>
                       <div className="folder-info">
                         <div className="folder-name">{trip.name}</div>
-                        <div className="folder-meta" style={trip.background ? { color: 'rgba(255,255,255,0.9)' } : {}}>
+                        <div className="folder-meta" style={uploadedCover ? { color: '#f1f5f9' } : {}}>
                           <span>{trip.expenses.length} expenses</span>
                           <span className="meta-dot">{trip.members?.length || 1} members</span>
                         </div>
-                        <div className="folder-date" style={trip.background ? { color: 'rgba(255,255,255,0.85)' } : {}}>
+                        <div className="folder-date" style={uploadedCover ? { color: '#e2e8f0' } : {}}>
                           Updated {new Date(trip.lastUpdated?.toMillis?.() || trip.lastUpdated).toLocaleDateString()}
                         </div>
                       </div>
                     </div>
 
-                    {showBgPicker === trip.id && (
-                      <div className="theme-picker-popup" onClick={e => e.stopPropagation()}>
-                        <div style={{ marginBottom: '12px', fontWeight: 'bold', fontSize: '0.9rem' }}>Change Cover</div>
-                        <div className="theme-options">
-                          <div className="theme-circle" style={{ background: 'linear-gradient(135deg, #6366f1, #a855f7)' }} onClick={() => updateTripBackground(trip.id, 'linear-gradient(135deg, #6366f1, #a855f7)')}></div>
-                          <div className="theme-circle" style={{ background: 'linear-gradient(135deg, #ec4899, #8b5cf6)' }} onClick={() => updateTripBackground(trip.id, 'linear-gradient(135deg, #ec4899, #8b5cf6)')}></div>
-                          <div className="theme-circle" style={{ background: 'linear-gradient(135deg, #10b981, #3b82f6)' }} onClick={() => updateTripBackground(trip.id, 'linear-gradient(135deg, #10b981, #3b82f6)')}></div>
-                          <div className="theme-circle" style={{ background: 'linear-gradient(135deg, #f59e0b, #ef4444)' }} onClick={() => updateTripBackground(trip.id, 'linear-gradient(135deg, #f59e0b, #ef4444)')}></div>
-                          <div className="theme-circle" style={{ background: 'linear-gradient(135deg, #06b6d4, #3b82f6)' }} onClick={() => updateTripBackground(trip.id, 'linear-gradient(135deg, #06b6d4, #3b82f6)')}></div>
-                          <div className="theme-circle" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid #555' }} onClick={() => updateTripBackground(trip.id, '')}></div>
-                        </div>
-
-                        <div style={{ marginTop: '15px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                          <input placeholder="Paste Image URL..." style={{ fontSize: '0.9rem', padding: '8px' }} value={customImageUrl} onChange={e => setCustomImageUrl(e.target.value)} />
-                          <button className="btn btn-primary" style={{ padding: '8px', fontSize: '0.9rem', width: '100%' }} onClick={() => updateTripBackground(trip.id, `url(${customImageUrl})`)}>Use URL</button>
-
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginTop: '5px' }}>
-                            <div style={{ height: '1px', background: 'rgba(255,255,255,0.2)', flex: 1 }}></div>
-                            <span style={{ fontSize: '0.7rem', color: '#888' }}>OR</span>
-                            <div style={{ height: '1px', background: 'rgba(255,255,255,0.2)', flex: 1 }}></div>
-                          </div>
-
-                          <input type="file" accept="image/*" style={{ display: 'none' }} ref={fileInputRef} onChange={(e) => handleFileUpload(e, trip.id)} />
-                          <button className="upload-btn" onClick={() => fileInputRef.current.click()}>📲 Upload from Device</button>
-                        </div>
-                      </div>
-                    )}
                   </div>
+                    );
+                  })()
                 ))}
               </div>
             )}
@@ -943,6 +1001,24 @@ function App() {
               <strong style={{ letterSpacing: '1px', color: 'white' }}>{activeTrip.joinCode || '------'}</strong>
               <span style={{ cursor: 'pointer', marginLeft: '5px' }} onClick={() => navigator.clipboard.writeText(activeTrip.joinCode)} title="Copy Code">📋</span>
             </div>
+
+            <section className="participants-panel">
+              <div>
+                <h2>Trip participants</h2>
+                <p>Add everyone once; their names will be available on every receipt.</p>
+              </div>
+              <div className="participant-list">
+                {(activeTrip.participants || []).map(person => (
+                  <span className="participant-chip" key={person}>{person}
+                    <button type="button" onClick={() => removeTripParticipant(person)} aria-label={`Remove ${person}`}>×</button>
+                  </span>
+                ))}
+              </div>
+              <form className="participant-form" onSubmit={addTripParticipant}>
+                <input value={newParticipantName} onChange={event => setNewParticipantName(event.target.value)} placeholder="Add a name" maxLength={60} />
+                <button className="btn btn-primary" type="submit">Add participant</button>
+              </form>
+            </section>
           </div>
 
           <div className="layout-grid">
@@ -955,12 +1031,19 @@ function App() {
               {tripLocations.length === 0 && <div style={{ color: 'var(--text-muted)', padding: '20px', border: '1px dashed var(--glass-border)', borderRadius: '10px' }}>No receipts yet.</div>}
               <div className="folder-grid" style={{ justifyContent: 'flex-start' }}>
                 {tripLocations.map(loc => {
-                  const locTheme = activeTrip.themes?.[loc];
-                  const tileStyle = locTheme ? { backgroundImage: locTheme, backgroundSize: 'cover', backgroundPosition: 'center' } : {};
+                  const coverImage = activeTrip.receiptCovers?.[loc] || activeTrip.receiptImages?.[loc];
+                  const coverSettings = activeTrip.receiptCoverSettings?.[loc] || { positionX: 50, positionY: 50, zoom: 1 };
                   return (
-                    <div key={loc} className="folder-card" style={{ padding: '20px', ...tileStyle }} onClick={() => openLocationTab(loc)}>
-                      <span style={{ fontSize: '2rem', textShadow: locTheme ? '0 2px 4px rgba(0,0,0,0.5)' : 'none' }}>🧾</span>
-                      <div style={{ fontWeight: 'bold', marginTop: '5px', color: 'white', textShadow: locTheme ? '0 2px 4px rgba(0,0,0,0.8)' : 'none' }}>{loc}</div>
+                    <div key={loc} className={`folder-card receipt-tile${coverImage ? ' has-cover' : ''}`} onClick={() => openLocationTab(loc)}>
+                      {coverImage && <img className="receipt-tile-cover" src={coverImage} alt="" style={{ objectPosition: `${coverSettings.positionX}% ${coverSettings.positionY}%`, transform: `scale(${coverSettings.zoom})`, transformOrigin: `${coverSettings.positionX}% ${coverSettings.positionY}%` }} />}
+                      <div className="receipt-tile-content">
+                        <span className="receipt-tile-icon">🧾</span>
+                        <div className="receipt-tile-name">{loc}</div>
+                      </div>
+                      <label className="receipt-cover-button" onClick={event => event.stopPropagation()}>
+                        <input type="file" accept="image/*" onChange={event => openReceiptCoverEditor(event, loc)} />
+                        {coverUploads[loc] ? 'Uploading…' : coverImage ? 'Change cover' : 'Add cover'}
+                      </label>
                     </div>
                   )
                 })}
@@ -1088,26 +1171,6 @@ function App() {
 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
             <h1 className="header-title" style={{ margin: 0 }}>{activeLocation} <span className="no-print" style={{ fontSize: '0.5em', opacity: 0.5 }}>Receipt</span></h1>
-            <div className="no-print" style={{ position: 'relative' }}>
-              <button className="btn-icon" style={{ width: '36px', height: '36px', fontSize: '1rem', background: 'rgba(255,255,255,0.1)' }} onClick={() => setShowBgPicker(!showBgPicker)}>🎨</button>
-              {showBgPicker && (
-                <div className="theme-picker-popup">
-                  <div style={{ marginBottom: '8px', fontWeight: 'bold', fontSize: '0.8rem' }}>Change Card Background</div>
-                  <div className="theme-options">
-                    <div className="theme-circle" style={{ background: 'linear-gradient(135deg, #6366f1, #a855f7)' }} onClick={() => updateReceiptTheme('linear-gradient(135deg, #6366f1, #a855f7)')}></div>
-                    <div className="theme-circle" style={{ background: 'linear-gradient(135deg, #ec4899, #8b5cf6)' }} onClick={() => updateReceiptTheme('linear-gradient(135deg, #ec4899, #8b5cf6)')}></div>
-                    <div className="theme-circle" style={{ background: 'linear-gradient(135deg, #10b981, #3b82f6)' }} onClick={() => updateReceiptTheme('linear-gradient(135deg, #10b981, #3b82f6)')}></div>
-                    <div className="theme-circle" style={{ background: 'linear-gradient(135deg, #f59e0b, #ef4444)' }} onClick={() => updateReceiptTheme('linear-gradient(135deg, #f59e0b, #ef4444)')}></div>
-                    <div className="theme-circle" style={{ background: 'linear-gradient(135deg, #06b6d4, #3b82f6)' }} onClick={() => updateReceiptTheme('linear-gradient(135deg, #06b6d4, #3b82f6)')}></div>
-                    <div className="theme-circle" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid #555' }} onClick={() => updateReceiptTheme('')}></div>
-                  </div>
-                  <div style={{ marginTop: '10px', display: 'flex', gap: '5px' }}>
-                    <input placeholder="Image URL..." style={{ fontSize: '0.8rem', padding: '6px' }} value={customImageUrl} onChange={e => setCustomImageUrl(e.target.value)} />
-                    <button className="btn btn-primary" style={{ padding: '4px 8px', fontSize: '0.8rem', width: 'auto' }} onClick={() => updateReceiptTheme(`url(${customImageUrl})`)}>Go</button>
-                  </div>
-                </div>
-              )}
-            </div>
           </div>
 
           <div className="action-bar no-print">
@@ -1117,6 +1180,9 @@ function App() {
               <span>📷</span> Upload Photo
               <input type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => handleReceiptImageUpload(e, activeLocation)} />
             </label>
+            {activeTrip.receiptImages?.[activeLocation] && (
+              <button className="btn-action btn-remove-photo" onClick={() => removeReceiptImage(activeLocation)}><span>×</span> Remove Photo</button>
+            )}
           </div>
 
           {activeTrip.receiptImages && activeTrip.receiptImages[activeLocation] && (
@@ -1126,15 +1192,15 @@ function App() {
           )}
 
           <div className="layout-grid">
-            <div className="card" style={activeReceiptTheme ? { backgroundImage: activeReceiptTheme, backgroundSize: 'cover', backgroundPosition: 'center', boxShadow: '0 20px 50px rgba(0,0,0,0.5)' } : {}}>
-              <h3 style={{ marginTop: 0, textShadow: activeReceiptTheme ? '0 2px 4px rgba(0,0,0,0.8)' : 'none' }}>Receipt Items</h3>
+            <div className="card">
+              <h3 style={{ marginTop: 0 }}>Receipt Items</h3>
               <div className="items-grid">
                 {locationExpenses.map(exp => (
-                  <div key={exp.id} className="expense-box" style={activeReceiptTheme ? { background: 'rgba(0,0,0,0.6)', borderColor: 'rgba(255,255,255,0.2)' } : {}}>
+                  <div key={exp.id} className="expense-box">
                     <div>
                       <div style={{ fontWeight: 'bold', fontSize: '1rem', color: 'white' }}>{exp.item}</div>
                       <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Shared by: <span style={{ color: 'white' }}>{exp.involved.join(', ')}</span></div>
-                      <div style={{ fontSize: '0.8rem', color: activeReceiptTheme ? '#818cf8' : 'var(--primary-glow)', marginTop: '4px', fontWeight: activeReceiptTheme ? 'bold' : 'normal' }}>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--primary)', marginTop: '4px' }}>
                         Paid by: {exp.payer}
                       </div>
                     </div>
@@ -1188,8 +1254,9 @@ function App() {
 
             <div className="input-row" style={{ display: 'flex', gap: '15px', marginBottom: '15px' }}>
               <div className="input-group" style={{ flex: 1 }}><label>Location</label><input placeholder="e.g. Cowfish" value={receiptLoc} onChange={e => setReceiptLoc(e.target.value)} /></div>
-              <div className="input-group" style={{ flex: 1 }}><label>Payer</label><input placeholder="e.g. Ashton" value={receiptPayer} onChange={e => setReceiptPayer(e.target.value)} /></div>
+              <div className="input-group" style={{ flex: 1 }}><label>Payer</label><input list="trip-participants" placeholder="e.g. Ashton" value={receiptPayer} onChange={e => setReceiptPayer(e.target.value)} /></div>
             </div>
+            <datalist id="trip-participants">{allAvailablePeople.map(person => <option key={person} value={person} />)}</datalist>
 
             <div style={{ background: 'rgba(255,255,255,0.05)', padding: '20px', borderRadius: '16px', marginBottom: '20px', border: editingIndex !== null ? '1px solid var(--success)' : '1px solid var(--glass-border)' }}>
               <div className="input-row" style={{ display: 'flex', gap: '10px' }}>
@@ -1284,6 +1351,32 @@ function App() {
               <div className="input-group" style={{ flex: 1 }}><div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}><label>Tip</label><span onClick={() => setTipMode(tipMode === '$' ? '%' : '$')} style={{ color: 'var(--primary)', cursor: 'pointer', fontWeight: 'bold' }}>{tipMode}</span></div><input type="number" value={receiptTip} onChange={e => setReceiptTip(e.target.value)} /></div>
             </div>
             <button className="btn btn-primary" style={{ marginTop: '30px' }} onClick={saveReceiptToTrip}>{editingTripExpenseId || editingLocationBatch ? "Save Changes" : "Save Receipt"}</button>
+          </div>
+        </div>
+      )}
+
+      {coverEditor && (
+        <div className="cover-editor-backdrop" role="dialog" aria-modal="true" aria-labelledby="cover-editor-title">
+          <div className="cover-editor">
+            <div className="cover-editor-header">
+              <div>
+                <h2 id="cover-editor-title">Frame your cover</h2>
+                <p>Adjust the photo before using it for {coverEditor.location}.</p>
+              </div>
+              <button className="cover-editor-close" type="button" onClick={closeCoverEditor} aria-label="Close">×</button>
+            </div>
+            <div className="cover-editor-preview">
+              <img src={coverEditor.previewUrl} alt="Cover preview" style={{ objectPosition: `${coverCrop.positionX}% ${coverCrop.positionY}%`, transform: `scale(${coverCrop.zoom})`, transformOrigin: `${coverCrop.positionX}% ${coverCrop.positionY}%` }} />
+            </div>
+            <div className="cover-editor-controls">
+              <label>Horizontal position <input type="range" min="0" max="100" value={coverCrop.positionX} onChange={event => setCoverCrop(current => ({ ...current, positionX: Number(event.target.value) }))} /></label>
+              <label>Vertical position <input type="range" min="0" max="100" value={coverCrop.positionY} onChange={event => setCoverCrop(current => ({ ...current, positionY: Number(event.target.value) }))} /></label>
+              <label>Zoom <input type="range" min="1" max="2" step="0.01" value={coverCrop.zoom} onChange={event => setCoverCrop(current => ({ ...current, zoom: Number(event.target.value) }))} /></label>
+            </div>
+            <div className="cover-editor-actions">
+              <button className="back-btn" type="button" onClick={closeCoverEditor}>Cancel</button>
+              <button className="btn btn-primary" type="button" onClick={uploadReceiptCover} disabled={coverUploads[coverEditor.location]}>{coverUploads[coverEditor.location] ? 'Uploading…' : 'Use this cover'}</button>
+            </div>
           </div>
         </div>
       )}
