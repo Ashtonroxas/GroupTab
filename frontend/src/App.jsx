@@ -538,10 +538,13 @@ function App() {
       const fileRef = ref(storage, path);
       await uploadBytes(fileRef, file, { contentType: file.type });
       const coverUrl = await getDownloadURL(fileRef);
+      const previousPath = trip.tripCoverPath;
       await updateDoc(doc(db, 'shared_trips', trip.id), {
         tripCover: coverUrl,
+        tripCoverPath: path,
         lastUpdated: new Date()
       });
+      if (previousPath) await deleteObject(ref(storage, previousPath)).catch((error) => console.warn('Previous trip cover could not be removed:', error));
       showNotice('Trip cover updated.', 'success');
     } catch (err) {
       console.error('Trip cover upload failed:', err);
@@ -549,6 +552,30 @@ function App() {
     } finally {
       setTripCoverUploads(current => ({ ...current, [trip.id]: false }));
     }
+  };
+
+  const removeTripCover = (event, trip) => {
+    event.stopPropagation();
+    setConfirmation({
+      title: 'Remove trip cover?',
+      message: 'The trip will return to its standard card appearance.',
+      confirmLabel: 'Remove cover',
+      onConfirm: async () => {
+        try {
+          await updateDoc(doc(db, 'shared_trips', trip.id), {
+            tripCover: '',
+            tripCoverPath: '',
+            background: null,
+            lastUpdated: new Date()
+          });
+          if (trip.tripCoverPath) await deleteObject(ref(storage, trip.tripCoverPath)).catch((error) => console.warn('Trip cover file could not be removed:', error));
+          showNotice('Trip cover removed.', 'success');
+        } catch (error) {
+          console.error('Trip cover removal failed:', error);
+          showNotice('We could not remove that trip cover. Please try again.', 'error');
+        }
+      }
+    });
   };
 
   const closeCoverEditor = () => {
@@ -582,11 +609,14 @@ function App() {
       const fileRef = ref(storage, path);
       await uploadBytes(fileRef, file, { contentType: file.type });
       const coverUrl = await getDownloadURL(fileRef);
+      const previousPath = activeTrip.receiptCoverPaths?.[location];
       await updateDoc(doc(db, 'shared_trips', activeTripId), {
         receiptCovers: { ...(activeTrip.receiptCovers || {}), [location]: coverUrl },
+        receiptCoverPaths: { ...(activeTrip.receiptCoverPaths || {}), [location]: path },
         receiptCoverSettings: { ...(activeTrip.receiptCoverSettings || {}), [location]: coverCrop },
         lastUpdated: new Date()
       });
+      if (previousPath) await deleteObject(ref(storage, previousPath)).catch((error) => console.warn('Previous receipt cover could not be removed:', error));
       closeCoverEditor();
       showNotice('Receipt cover updated.', 'success');
     } catch (err) {
@@ -595,6 +625,37 @@ function App() {
     } finally {
       setCoverUploads(current => ({ ...current, [location]: false }));
     }
+  };
+
+  const removeReceiptCover = (location) => {
+    if (!activeTrip?.receiptCovers?.[location]) return;
+    setConfirmation({
+      title: 'Remove receipt cover?',
+      message: 'This removes the chosen card cover. The original receipt photo, if present, will be used instead.',
+      confirmLabel: 'Remove cover',
+      onConfirm: async () => {
+        const updatedCovers = { ...(activeTrip.receiptCovers || {}) };
+        const updatedPaths = { ...(activeTrip.receiptCoverPaths || {}) };
+        const updatedSettings = { ...(activeTrip.receiptCoverSettings || {}) };
+        const previousPath = updatedPaths[location];
+        delete updatedCovers[location];
+        delete updatedPaths[location];
+        delete updatedSettings[location];
+        try {
+          await updateDoc(doc(db, 'shared_trips', activeTripId), {
+            receiptCovers: updatedCovers,
+            receiptCoverPaths: updatedPaths,
+            receiptCoverSettings: updatedSettings,
+            lastUpdated: new Date()
+          });
+          if (previousPath) await deleteObject(ref(storage, previousPath)).catch((error) => console.warn('Receipt cover file could not be removed:', error));
+          showNotice('Receipt cover removed.', 'success');
+        } catch (error) {
+          console.error('Receipt cover removal failed:', error);
+          showNotice('We could not remove that receipt cover. Please try again.', 'error');
+        }
+      }
+    });
   };
 
   const printReceipt = () => window.print();
@@ -1208,6 +1269,9 @@ function App() {
                             <input type="file" accept="image/*" onChange={event => handleTripCoverUpload(event, trip)} />
                             {tripCoverUploads[trip.id] ? 'Uploading…' : uploadedCover ? 'Update cover' : 'Add cover'}
                           </label>
+                          {uploadedCover && (
+                            <button className="cover-remove-button" type="button" onClick={event => removeTripCover(event, trip)}>Remove cover</button>
+                          )}
                           {isTripManager(trip) && (
                             <button className="delete-btn" onClick={(e) => deleteFolder(e, trip.id)} title="Delete trip">✕</button>
                           )}
@@ -1341,6 +1405,9 @@ function App() {
                         <input type="file" accept="image/*" onChange={event => openReceiptCoverEditor(event, loc)} />
                         {coverUploads[loc] ? 'Uploading…' : coverImage ? 'Change cover' : 'Add cover'}
                       </label>
+                      {activeTrip.receiptCovers?.[loc] && (
+                        <button className="cover-remove-button receipt-cover-remove" type="button" onClick={event => { event.stopPropagation(); removeReceiptCover(loc); }}>Remove cover</button>
+                      )}
                       {!coverImage && (
                         <label className="receipt-color-select" onClick={event => event.stopPropagation()}>
                           Color

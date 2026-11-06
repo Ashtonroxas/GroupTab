@@ -602,8 +602,24 @@ input:focus {
 .trip-cover-button input { display: none; }
 .folder-card:hover .trip-cover-button { opacity: 1; }
 
+.cover-remove-button {
+  background: rgba(17, 24, 39, .72);
+  border: 1px solid rgba(251, 113, 133, .45);
+  border-radius: 8px;
+  color: #fecdd3;
+  cursor: pointer;
+  font: inherit;
+  font-size: .75rem;
+  font-weight: 600;
+  opacity: 0;
+  padding: 6px 8px;
+}
+
+.cover-remove-button:hover { background: #7f1d2d; border-color: #fb7185; color: #fff; }
+.folder-card:hover .cover-remove-button { opacity: 1; }
+
 @media (hover: none) {
-  .trip-cover-button { opacity: 1; }
+  .trip-cover-button, .cover-remove-button { opacity: 1; }
 }
 
 .home-trip-card .delete-btn {
@@ -687,6 +703,13 @@ input:focus {
 
 .receipt-cover-button:hover { background: var(--primary); }
 .receipt-cover-button input { display: none; }
+
+.receipt-cover-remove {
+  bottom: 14px;
+  left: 14px;
+  opacity: 1;
+  position: absolute;
+}
 
 .receipt-color-select {
   align-items: center;
