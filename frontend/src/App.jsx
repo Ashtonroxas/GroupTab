@@ -30,6 +30,15 @@ const GoogleIcon = () => (
 );
 
 const tripCardEmojis = ['🧳', '🌎', '🏝️', '🏔️', '🏙️', '🗺️', '🚗', '🚆', '🚢', '🏕️', '🌅', '📍'];
+const receiptColorOptions = [
+  { value: '#182235', label: 'Default' },
+  { value: '#1e3a5f', label: 'Blue' },
+  { value: '#164e63', label: 'Teal' },
+  { value: '#365314', label: 'Green' },
+  { value: '#78350f', label: 'Amber' },
+  { value: '#701a75', label: 'Purple' },
+  { value: '#7f1d1d', label: 'Red' }
+];
 
 // Legacy trip covers share a field with the removed AI backgrounds. Keep only
 // device-uploaded image data and deliberately ignore remote/generated URLs.
@@ -41,6 +50,55 @@ const getUploadedTripCover = (trip) => {
     ? trip.background
     : null;
 };
+
+function NoticeRegion({ notice, onDismiss }) {
+  if (!notice) return null;
+
+  return (
+    <div className="notice-region" aria-live="polite" aria-atomic="true">
+      <div className={`notice notice-${notice.tone || 'info'}`} role={notice.tone === 'error' ? 'alert' : 'status'}>
+        <span>{notice.message}</span>
+        <button type="button" onClick={onDismiss} aria-label="Dismiss message">×</button>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmationDialog({ confirmation, onCancel, onConfirm }) {
+  if (!confirmation) return null;
+
+  return (
+    <div className="dialog-backdrop" role="presentation" onMouseDown={onCancel}>
+      <section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="confirmation-title" onMouseDown={event => event.stopPropagation()}>
+        <p className="dialog-eyebrow">Please confirm</p>
+        <h2 id="confirmation-title">{confirmation.title}</h2>
+        <p>{confirmation.message}</p>
+        {confirmation.confirmationPhrase && (
+          <label className="confirmation-input">
+            Type <strong>{confirmation.confirmationPhrase}</strong> to continue
+            <input
+              value={confirmation.value || ''}
+              onChange={event => confirmation.setValue(event.target.value)}
+              autoComplete="off"
+              autoFocus
+            />
+          </label>
+        )}
+        <div className="dialog-actions">
+          <button className="back-btn" type="button" onClick={onCancel}>Cancel</button>
+          <button
+            className="btn btn-danger"
+            type="button"
+            onClick={onConfirm}
+            disabled={Boolean(confirmation.confirmationPhrase && confirmation.value !== confirmation.confirmationPhrase)}
+          >
+            {confirmation.confirmLabel || 'Delete'}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
 
 function App() {
   // --- USER STATE ---
@@ -77,10 +135,7 @@ function App() {
   const [unitPrice, setUnitPrice] = useState('')
   const [quantity, setQuantity] = useState(1)
   const [selectedConsumers, setSelectedConsumers] = useState([])
-  const [sessionPeople, setSessionPeople] = useState([])
-  const [newPersonName, setNewPersonName] = useState('')
   const [newParticipantName, setNewParticipantName] = useState('')
-  const [hoveredChip, setHoveredChip] = useState(null) // NEW: Tracks which chip is being hovered
 
   // EDITING EXPENSE STATE
   const [editingIndex, setEditingIndex] = useState(null)
@@ -94,6 +149,23 @@ function App() {
   const [tripCoverUploads, setTripCoverUploads] = useState({})
   const [coverEditor, setCoverEditor] = useState(null)
   const [coverCrop, setCoverCrop] = useState({ positionX: 50, positionY: 50, zoom: 1 })
+  const [notice, setNotice] = useState(null)
+  const [confirmation, setConfirmation] = useState(null)
+
+  const showNotice = (message, tone = 'info') => setNotice({ message, tone })
+
+  useEffect(() => {
+    if (!notice) return undefined;
+    const timeout = window.setTimeout(() => setNotice(null), 5000);
+    return () => window.clearTimeout(timeout);
+  }, [notice]);
+
+  const closeConfirmation = () => setConfirmation(null)
+  const confirmAction = async () => {
+    const action = confirmation?.onConfirm;
+    setConfirmation(null);
+    await action?.();
+  }
 
   // ==========================================
   // HELPER: GET DATA
@@ -139,33 +211,7 @@ function App() {
     existingPeople.unshift(myName);
   }
 
-  const allAvailablePeople = Array.from(new Set([...existingPeople, ...sessionPeople]));
-
-  const handleAddNewPerson = (e) => {
-    e.preventDefault();
-    if (!newPersonName.trim()) return;
-
-    // Auto-capitalize the typed name (e.g., "john" -> "John", "el john" -> "El John")
-    const formattedName = newPersonName
-      .trim()
-      .split(/\s+/)
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-      .join(' ');
-
-    // Check if a variation of this name already exists (prevents duplicate chips)
-    const existingMatch = allAvailablePeople.find(p => p.toLowerCase() === formattedName.toLowerCase());
-    const finalNameToUse = existingMatch || formattedName;
-
-    if (!existingMatch && !sessionPeople.includes(finalNameToUse)) {
-      setSessionPeople([...sessionPeople, finalNameToUse]);
-    }
-
-    if (!selectedConsumers.includes(finalNameToUse)) {
-      setSelectedConsumers([...selectedConsumers, finalNameToUse]);
-    }
-
-    setNewPersonName('');
-  }
+  const allAvailablePeople = existingPeople;
 
   const toggleConsumer = (name) => {
     if (selectedConsumers.includes(name)) {
@@ -208,6 +254,7 @@ function App() {
         setTrips(tripList);
       }, (error) => {
         console.error("Snapshot Listener failed:", error);
+        showNotice('Your trips could not be refreshed. Check your connection and try again.', 'error');
       });
       return () => unsub();
     }
@@ -240,13 +287,15 @@ function App() {
   }, [trips, user]);
 
   const updateTripInCloud = async (tripId, updatedData) => {
-    if (!user) return;
+    if (!user) return false;
     try {
       const tripRef = doc(db, "shared_trips", tripId);
       await updateDoc(tripRef, { ...updatedData, lastUpdated: new Date() });
+      return true;
     } catch (e) {
       console.error("Error updating trip:", e);
-      alert("Permission denied. Check your rules for shared_trips.");
+      showNotice('We could not save that change. Please check your connection and try again.', 'error');
+      return false;
     }
   };
 
@@ -258,7 +307,7 @@ function App() {
       await signInWithPopup(auth, googleProvider)
     } catch (error) {
       console.error(error)
-      alert("Login failed")
+      showNotice('Google sign-in did not finish. Please try again.', 'error')
     }
   }
 
@@ -300,8 +349,6 @@ function App() {
     setEditingTripExpenseId(null)
     setEditingLocationBatch(null)
     setSelectedConsumers([])
-    setSessionPeople([])
-    setNewPersonName('')
     setView('receipt_editor')
   }
 
@@ -368,38 +415,57 @@ function App() {
   const handleReceiptImageUpload = async (e, location) => {
     const file = e.target.files[0];
     if (!file) return;
-    if (file.size > 10000000) return alert("File is way too huge! Please pick something smaller.");
+    if (file.size > 10000000) return showNotice('Choose an image smaller than 10 MB.', 'error');
     try {
       const resizedBase64 = await resizeImage(file);
       const updatedImages = { ...(activeTrip.receiptImages || {}), [location]: resizedBase64 };
       await updateTripInCloud(activeTripId, { receiptImages: updatedImages });
     } catch (err) {
       console.error("Image upload error:", err);
-      alert("Could not process image.");
+      showNotice('We could not process that photo. Please choose another image.', 'error');
     }
   };
 
   const removeReceiptImage = async (location) => {
-    if (!activeTrip || !window.confirm('Remove this receipt photo? This cannot be undone.')) return;
-    const updatedImages = { ...(activeTrip.receiptImages || {}) };
-    delete updatedImages[location];
-    try {
-      await updateDoc(doc(db, 'shared_trips', activeTripId), {
-        receiptImages: updatedImages,
-        lastUpdated: new Date()
-      });
-    } catch (err) {
-      console.error('Receipt photo removal failed:', err);
-      alert('Could not remove the receipt photo. Please try again.');
+    if (!activeTrip) return;
+    setConfirmation({
+      title: 'Remove receipt photo?',
+      message: 'The photo will be removed from this receipt. This cannot be undone.',
+      confirmLabel: 'Remove photo',
+      onConfirm: async () => {
+        const updatedImages = { ...(activeTrip.receiptImages || {}) };
+        delete updatedImages[location];
+        try {
+          await updateDoc(doc(db, 'shared_trips', activeTripId), {
+            receiptImages: updatedImages,
+            lastUpdated: new Date()
+          });
+          showNotice('Receipt photo removed.', 'success');
+        } catch (err) {
+          console.error('Receipt photo removal failed:', err);
+          showNotice('We could not remove that photo. Please try again.', 'error');
+        }
+      }
+    });
+  };
+
+  const updateReceiptColor = async (location, color) => {
+    if (!activeTrip) return;
+    const updatedColors = { ...(activeTrip.receiptColors || {}) };
+    if (color === receiptColorOptions[0].value) {
+      delete updatedColors[location];
+    } else {
+      updatedColors[location] = color;
     }
+    await updateTripInCloud(activeTripId, { receiptColors: updatedColors });
   };
 
   const handleTripCoverUpload = async (event, trip) => {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    if (!file.type.startsWith('image/')) return alert('Please choose an image file.');
-    if (file.size > 10 * 1024 * 1024) return alert('Please choose an image smaller than 10 MB.');
+    if (!file.type.startsWith('image/')) return showNotice('Choose an image file to use as a cover.', 'error');
+    if (file.size > 10 * 1024 * 1024) return showNotice('Choose an image smaller than 10 MB.', 'error');
 
     setTripCoverUploads(current => ({ ...current, [trip.id]: true }));
     try {
@@ -411,9 +477,10 @@ function App() {
         tripCover: coverUrl,
         lastUpdated: new Date()
       });
+      showNotice('Trip cover updated.', 'success');
     } catch (err) {
       console.error('Trip cover upload failed:', err);
-      alert('Could not upload the trip cover. Make sure Firebase Storage is enabled and its rules are published.');
+      showNotice('We could not upload that cover. Please try again.', 'error');
     } finally {
       setTripCoverUploads(current => ({ ...current, [trip.id]: false }));
     }
@@ -428,8 +495,8 @@ function App() {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    if (!file.type.startsWith('image/')) return alert('Please choose an image file.');
-    if (file.size > 10 * 1024 * 1024) return alert('Please choose an image smaller than 10 MB.');
+    if (!file.type.startsWith('image/')) return showNotice('Choose an image file to use as a cover.', 'error');
+    if (file.size > 10 * 1024 * 1024) return showNotice('Choose an image smaller than 10 MB.', 'error');
 
     const savedCrop = activeTrip?.receiptCoverSettings?.[location];
     setCoverCrop({
@@ -456,9 +523,10 @@ function App() {
         lastUpdated: new Date()
       });
       closeCoverEditor();
+      showNotice('Receipt cover updated.', 'success');
     } catch (err) {
       console.error('Receipt cover upload failed:', err);
-      alert('Could not upload the receipt cover. Make sure Firebase Storage is enabled and its rules are published.');
+      showNotice('We could not upload that cover. Please try again.', 'error');
     } finally {
       setCoverUploads(current => ({ ...current, [location]: false }));
     }
@@ -489,9 +557,10 @@ function App() {
     try {
       await setDoc(doc(db, "shared_trips", generatedCode), newTrip);
       setNewFolderName('');
+      showNotice(`“${newTrip.name}” is ready to share.`, 'success');
     } catch (e) {
       console.error("Error creating shared trip: ", e);
-      alert("Check your console (F12) for the specific Firebase error.");
+      showNotice('We could not create that trip. Please try again.', 'error');
     }
   };
 
@@ -504,57 +573,81 @@ function App() {
         members: arrayUnion(user.uid)
       });
       setJoinCodeInput('');
-      alert("Successfully joined the trip!");
+      showNotice('You joined the trip.', 'success');
     } catch (e) {
       console.error("Join Error:", e);
-      alert("Could not join that trip. Check the code and try again.");
+      showNotice('We could not find that trip. Check the invite code and try again.', 'error');
     }
   };
 
   const deleteFolder = async (e, id) => {
     e.stopPropagation();
     const tripToDelete = trips.find(trip => trip.id === id);
-    if (!isTripManager(tripToDelete)) return alert("Only the trip owner or an admin can delete this trip.");
+    if (!isTripManager(tripToDelete)) return showNotice('Only the trip owner or an admin can delete this trip.', 'error');
 
-    if (confirm("Delete this entire trip folder for everyone?")) {
-      try {
-        const tripDocRef = doc(db, "shared_trips", id);
-        await deleteDoc(tripDocRef);
-      } catch (err) {
-        console.error("Error deleting trip: ", err);
+    setConfirmation({
+      title: `Delete “${tripToDelete?.name || 'this trip'}”?`,
+      message: 'This removes the trip and its shared data for everyone who has access.',
+      confirmLabel: 'Delete trip',
+      onConfirm: async () => {
+        try {
+          await deleteDoc(doc(db, "shared_trips", id));
+          showNotice('Trip deleted.', 'success');
+        } catch (err) {
+          console.error("Error deleting trip: ", err);
+          showNotice('We could not delete that trip. Please try again.', 'error');
+        }
       }
-    }
+    });
   };
 
   const clearAllTrips = async () => {
     if (!user || manageableTrips.length === 0 || isClearingTrips) return;
     const tripCount = manageableTrips.length;
-    const confirmMessage = `This will permanently delete ${tripCount} trip${tripCount === 1 ? '' : 's'} you own or administer for everyone who has access. Continue?`;
-    if (!window.confirm(confirmMessage)) return;
-
     const confirmationPhrase = `CLEAR ${tripCount}`;
-    if (window.prompt(`Final confirmation: type "${confirmationPhrase}" to delete all trips.`) !== confirmationPhrase) return;
-
-    setIsClearingTrips(true);
-    try {
-      const batchSize = 450;
-      for (let i = 0; i < manageableTrips.length; i += batchSize) {
-        const batch = writeBatch(db);
-        manageableTrips.slice(i, i + batchSize).forEach((trip) => {
-          batch.delete(doc(db, "shared_trips", trip.id));
-        });
-        await batch.commit();
+    const confirmationState = { value: '' };
+    setConfirmation({
+      title: `Delete ${tripCount} trip${tripCount === 1 ? '' : 's'}?`,
+      message: 'This permanently removes every trip you own or administer for everyone who has access.',
+      confirmationPhrase,
+      ...confirmationState,
+      setValue: value => setConfirmation(current => ({ ...current, value })),
+      confirmLabel: 'Delete all trips',
+      onConfirm: async () => {
+        setIsClearingTrips(true);
+        try {
+          const batchSize = 450;
+          for (let i = 0; i < manageableTrips.length; i += batchSize) {
+            const batch = writeBatch(db);
+            manageableTrips.slice(i, i + batchSize).forEach((trip) => {
+              batch.delete(doc(db, "shared_trips", trip.id));
+            });
+            await batch.commit();
+          }
+          showNotice('Your managed trips were deleted.', 'success');
+        } catch (err) {
+          console.error("Error clearing trips: ", err);
+          showNotice('We could not clear every trip. Please refresh and try again.', 'error');
+        } finally {
+          setIsClearingTrips(false);
+        }
       }
-    } catch (err) {
-      console.error("Error clearing trips: ", err);
-    } finally {
-      setIsClearingTrips(false);
-    }
+    });
   };
 
-  const deleteExpense = async (expenseId) => {
-    const updatedExpenses = activeTrip.expenses.filter(e => e.id !== expenseId);
-    await updateTripInCloud(activeTripId, { expenses: updatedExpenses });
+  const deleteExpense = (expenseId) => {
+    const expense = activeTrip?.expenses.find(item => item.id === expenseId);
+    if (!expense) return;
+    setConfirmation({
+      title: 'Remove this item?',
+      message: `“${expense.item}” will be removed from ${expense.location}.`,
+      confirmLabel: 'Remove item',
+      onConfirm: async () => {
+        const updatedExpenses = activeTrip.expenses.filter(item => item.id !== expenseId);
+        const saved = await updateTripInCloud(activeTripId, { expenses: updatedExpenses });
+        if (saved) showNotice('Receipt item removed.', 'success');
+      }
+    });
   };
 
   const addTripParticipant = async (event) => {
@@ -574,7 +667,7 @@ function App() {
   const removeTripParticipant = async (name) => {
     if (!activeTrip) return;
     const isUsed = activeTrip.expenses.some(expense => expense.payer === name || expense.involved.includes(name));
-    if (isUsed) return alert(`${name} is used on a receipt and cannot be removed.`);
+    if (isUsed) return showNotice(`${name} is included on a receipt and cannot be removed.`, 'error');
     await updateTripInCloud(activeTripId, { participants: (activeTrip.participants || []).filter(person => person !== name) });
   };
 
@@ -592,21 +685,16 @@ function App() {
     const currentSettled = activeTrip.settledDebts || [];
     const isSettled = currentSettled.includes(line);
 
-    const updatedSettledDebts = isSettled
-      ? currentSettled.filter(d => d !== line)
-      : [...currentSettled, line];
-
-    activeTrip.settledDebts = updatedSettledDebts;
-
     const tripRef = doc(db, "shared_trips", activeTripId);
 
     try {
       await updateDoc(tripRef, {
         settledDebts: isSettled ? arrayRemove(line) : arrayUnion(line)
       });
+      showNotice(isSettled ? 'Marked as unpaid.' : 'Marked as paid.', 'success');
     } catch (e) {
       console.error("Error updating settlement status:", e);
-      alert("Could not update settlement. Check internet connection.");
+      showNotice('We could not update that settlement. Please try again.', 'error');
     }
   };
 
@@ -664,7 +752,7 @@ function App() {
       setResults(Array.isArray(settlementPlan) ? settlementPlan : settlementPlan.data || []);
     } catch (error) {
       console.error("Error fetching settlement:", error);
-      alert(error.message || "Failed to connect to backend.");
+      showNotice(error.message || 'We could not calculate settlements. Please try again.', 'error');
     } finally {
       setIsLoading(false);
     }
@@ -672,9 +760,12 @@ function App() {
 
   // --- BUILDER ACTIONS ---
   const handleAddOrUpdateItem = () => {
-    if (!itemName || !unitPrice || selectedConsumers.length === 0) return alert("Fill item details and select at least one consumer")
-    const qty = parseFloat(quantity) || 1
-    const price = parseFloat(unitPrice)
+    const price = Number(unitPrice)
+    const itemQuantity = Number(quantity)
+    if (!itemName.trim() || !Number.isFinite(price) || price <= 0 || !Number.isFinite(itemQuantity) || itemQuantity <= 0 || selectedConsumers.length === 0) {
+      return showNotice('Enter an item, a positive price and quantity, then select who shared it.', 'error')
+    }
+    const qty = itemQuantity
     const totalLineCost = price * qty
     const newItem = {
       name: itemName,
@@ -707,8 +798,8 @@ function App() {
   }
 
   const saveReceiptToTrip = async () => {
-    if (!receiptLoc || !receiptPayer) return alert("Enter Location and Payer");
-    if (currentItems.length === 0) return alert("Add items");
+    if (!receiptLoc.trim() || !receiptPayer.trim()) return showNotice('Add a receipt name and choose who paid.', 'error');
+    if (currentItems.length === 0) return showNotice('Add at least one item before saving this receipt.', 'error');
 
     const subtotal = currentItems.reduce((sum, item) => sum + item.totalPrice, 0);
     let taxTotal = parseFloat(receiptTax) || 0;
@@ -759,8 +850,10 @@ function App() {
       setView('receipt_detail');
       setEditingTripExpenseId(null);
       setEditingLocationBatch(null);
+      showNotice(editingTripExpenseId || editingLocationBatch ? 'Receipt changes saved.' : 'Receipt saved.', 'success');
     } catch (err) {
       console.error("Save failed:", err);
+      showNotice('We could not save that receipt. Please try again.', 'error');
     }
   };
 
@@ -811,8 +904,10 @@ function App() {
 
   if (view === 'login' || !user) {
     return (
-      <div className="hero-wrapper">
-        <div className="hero-content">
+      <>
+        <NoticeRegion notice={notice} onDismiss={() => setNotice(null)} />
+        <div className="hero-wrapper">
+          <div className="hero-content">
           <div className="hero-text-side">
             <div className="badge-pill">✨ The easiest way to split bills</div>
             <h1 className="hero-title-large">
@@ -834,15 +929,16 @@ function App() {
             <div className="mockup-phone">
               <div className="mockup-header"><div className="mockup-notch"></div><div className="mockup-title">NYC Trip 🗽</div></div>
               <div className="mockup-body">
-                <div className="mockup-row fade-1"><div className="icon-circle">🍕</div><div className="row-text"><div className="row-title">Joe's Pizza</div><div className="row-sub">Paid by Ashton</div></div><div className="row-price text-red">-$15.00</div></div>
-                <div className="mockup-row fade-2"><div className="icon-circle">🚕</div><div className="row-text"><div className="row-title">Uber to Hotel</div><div className="row-sub">Paid by Therese</div></div><div className="row-price text-green">+$8.50</div></div>
-                <div className="mockup-row fade-3"><div className="icon-circle">🍸</div><div className="row-text"><div className="row-title">Rooftop Drinks</div><div className="row-sub">Paid by ElJohn</div></div><div className="row-price text-red">-$22.00</div></div>
-                <div className="mockup-floating-card float-anim"><span>💸 You owe Wes</span><strong>$22.00</strong></div>
+                <div className="mockup-row"><div className="icon-circle">🍕</div><div className="row-text"><div className="row-title">Joe's Pizza</div><div className="row-sub">Paid by Ashton</div></div><div className="row-price text-red">-$15.00</div></div>
+                <div className="mockup-row"><div className="icon-circle">🚕</div><div className="row-text"><div className="row-title">Uber to Hotel</div><div className="row-sub">Paid by Therese</div></div><div className="row-price text-green">+$8.50</div></div>
+                <div className="mockup-row"><div className="icon-circle">🍸</div><div className="row-text"><div className="row-title">Rooftop Drinks</div><div className="row-sub">Paid by ElJohn</div></div><div className="row-price text-red">-$22.00</div></div>
+                <div className="mockup-floating-card"><span>💸 You owe Wes</span><strong>$22.00</strong></div>
               </div>
             </div>
           </div>
+          </div>
         </div>
-      </div>
+      </>
     )
   }
 
@@ -850,7 +946,8 @@ function App() {
     <div className="app-container">
 
       {/* HEADER */}
-      <div className="no-print" style={{ marginBottom: '20px', borderBottom: '1px solid var(--glass-border)', paddingBottom: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <NoticeRegion notice={notice} onDismiss={() => setNotice(null)} />
+      <div className="app-header no-print">
         <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
           <h2 className="header-title" style={{ margin: 0, fontSize: '1.8rem', cursor: 'pointer' }} onClick={goHome}>GroupTab 📁</h2>
           <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.1)', padding: '4px 10px', borderRadius: '20px' }}>
@@ -999,7 +1096,21 @@ function App() {
             }}>
               <span style={{ opacity: 0.7 }}>Invite Code:</span>
               <strong style={{ letterSpacing: '1px', color: 'white' }}>{activeTrip.joinCode || '------'}</strong>
-              <span style={{ cursor: 'pointer', marginLeft: '5px' }} onClick={() => navigator.clipboard.writeText(activeTrip.joinCode)} title="Copy Code">📋</span>
+              <button
+                className="copy-code-button"
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(activeTrip.joinCode);
+                    showNotice('Invite code copied.', 'success');
+                  } catch (error) {
+                    console.error('Could not copy invite code:', error);
+                    showNotice('Copy the invite code manually.', 'error');
+                  }
+                }}
+                title="Copy invite code"
+                aria-label="Copy invite code"
+              >📋</button>
             </div>
 
             <section className="participants-panel">
@@ -1033,8 +1144,9 @@ function App() {
                 {tripLocations.map(loc => {
                   const coverImage = activeTrip.receiptCovers?.[loc] || activeTrip.receiptImages?.[loc];
                   const coverSettings = activeTrip.receiptCoverSettings?.[loc] || { positionX: 50, positionY: 50, zoom: 1 };
+                  const cardColor = activeTrip.receiptColors?.[loc] || receiptColorOptions[0].value;
                   return (
-                    <div key={loc} className={`folder-card receipt-tile${coverImage ? ' has-cover' : ''}`} onClick={() => openLocationTab(loc)}>
+                    <div key={loc} className={`folder-card receipt-tile${coverImage ? ' has-cover' : ''}`} style={!coverImage ? { backgroundColor: cardColor } : {}} onClick={() => openLocationTab(loc)}>
                       {coverImage && <img className="receipt-tile-cover" src={coverImage} alt="" style={{ objectPosition: `${coverSettings.positionX}% ${coverSettings.positionY}%`, transform: `scale(${coverSettings.zoom})`, transformOrigin: `${coverSettings.positionX}% ${coverSettings.positionY}%` }} />}
                       <div className="receipt-tile-content">
                         <span className="receipt-tile-icon">🧾</span>
@@ -1044,6 +1156,14 @@ function App() {
                         <input type="file" accept="image/*" onChange={event => openReceiptCoverEditor(event, loc)} />
                         {coverUploads[loc] ? 'Uploading…' : coverImage ? 'Change cover' : 'Add cover'}
                       </label>
+                      {!coverImage && (
+                        <label className="receipt-color-select" onClick={event => event.stopPropagation()}>
+                          Color
+                          <select value={cardColor} onChange={event => updateReceiptColor(loc, event.target.value)}>
+                            {receiptColorOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                          </select>
+                        </label>
+                      )}
                     </div>
                   )
                 })}
@@ -1270,14 +1390,11 @@ function App() {
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
                   {allAvailablePeople.map(person => {
                     const isSelected = selectedConsumers.includes(person);
-                    const isNewAddition = sessionPeople.includes(person); // Check if this is a newly added name
 
                     return (
                       <div
                         key={person}
                         onClick={() => toggleConsumer(person)}
-                        onMouseEnter={() => setHoveredChip(person)}
-                        onMouseLeave={() => setHoveredChip(null)}
                         style={{
                           display: 'flex', alignItems: 'center', gap: '8px',
                           padding: '8px 14px', borderRadius: '20px',
@@ -1288,40 +1405,9 @@ function App() {
                         }}
                       >
                         {person}
-
-                        {/* ONLY show the X if it's hovered AND it's a newly added name */}
-                        {isNewAddition && hoveredChip === person && (
-                          <div
-                            onClick={(e) => {
-                              e.stopPropagation(); // Prevents the chip from toggling when clicking the X
-                              setSessionPeople(sessionPeople.filter(n => n !== person));
-                              setSelectedConsumers(selectedConsumers.filter(n => n !== person));
-                              setHoveredChip(null);
-                            }}
-                            style={{
-                              background: 'rgba(0,0,0,0.3)',
-                              borderRadius: '50%',
-                              width: '18px', height: '18px',
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              fontSize: '0.65rem', color: '#fff'
-                            }}
-                            title="Remove typo"
-                          >
-                            ✕
-                          </div>
-                        )}
                       </div>
                     );
                   })}
-                </div>
-                <div style={{ display: 'flex', gap: '10px' }}>
-                  <input
-                    placeholder="Type a new name..." value={newPersonName}
-                    onChange={e => setNewPersonName(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddNewPerson(e); } }}
-                    style={{ padding: '10px', fontSize: '0.9rem' }}
-                  />
-                  <button className="btn btn-primary" style={{ padding: '10px 16px', width: 'auto', fontSize: '0.9rem', borderRadius: '8px' }} onClick={handleAddNewPerson}>Add</button>
                 </div>
               </div>
 
@@ -1380,6 +1466,7 @@ function App() {
           </div>
         </div>
       )}
+      <ConfirmationDialog confirmation={confirmation} onCancel={closeConfirmation} onConfirm={confirmAction} />
     </div>
   );
 }

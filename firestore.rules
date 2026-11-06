@@ -64,6 +64,7 @@ service cloud.firestore {
           'receiptImages',
           'receiptCovers',
           'receiptCoverSettings',
+          'receiptColors',
           'tripCover',
           'participants',
           'settledDebts',
