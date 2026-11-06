@@ -31,6 +31,8 @@ service cloud.firestore {
           'settledDebts',
           'expenseStorageVersion',
           'expenseCount',
+          'receiptCount',
+          'totalSpent',
           'createdAt',
           'lastUpdated'
         ])
@@ -45,6 +47,8 @@ service cloud.firestore {
           'settledDebts',
           'expenseStorageVersion',
           'expenseCount',
+          'receiptCount',
+          'totalSpent',
           'createdAt',
           'lastUpdated'
         ])
@@ -57,6 +61,8 @@ service cloud.firestore {
         && request.resource.data.settledDebts is list
         && request.resource.data.expenseStorageVersion == 2
         && request.resource.data.expenseCount == 0
+        && request.resource.data.receiptCount == 0
+        && request.resource.data.totalSpent == 0
         && request.resource.data.joinCode is string
         && request.resource.data.name is string
         && request.resource.data.name.size() > 0
@@ -80,6 +86,8 @@ service cloud.firestore {
           'settledDebts',
           'expenseStorageVersion',
           'expenseCount',
+          'receiptCount',
+          'totalSpent',
           'lastUpdated'
         ]);
       }

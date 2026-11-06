@@ -65,6 +65,8 @@ const createInviteCode = () => {
   return Array.from({ length: 8 }, () => inviteCodeAlphabet[Math.floor(Math.random() * inviteCodeAlphabet.length)]).join('');
 };
 
+const personKey = (name) => String(name || '').trim().toLocaleLowerCase();
+
 function NoticeRegion({ notice, onDismiss }) {
   if (!notice) return null;
 
@@ -152,6 +154,9 @@ function App() {
   const [quantity, setQuantity] = useState(1)
   const [selectedConsumers, setSelectedConsumers] = useState([])
   const [newParticipantName, setNewParticipantName] = useState('')
+  const [isAddingParticipant, setIsAddingParticipant] = useState(false)
+  const [isRemovingParticipant, setIsRemovingParticipant] = useState(false)
+  const [participantToRemove, setParticipantToRemove] = useState('')
 
   // EDITING EXPENSE STATE
   const [editingIndex, setEditingIndex] = useState(null)
@@ -161,6 +166,7 @@ function App() {
   // Results
   const [results, setResults] = useState([])
   const [hasCalculated, setHasCalculated] = useState(false)
+  const [collapsedBreakdowns, setCollapsedBreakdowns] = useState({})
   const [isLoading, setIsLoading] = useState(false)
   const [coverUploads, setCoverUploads] = useState({})
   const [tripCoverUploads, setTripCoverUploads] = useState({})
@@ -171,6 +177,7 @@ function App() {
   const [confirmation, setConfirmation] = useState(null)
 
   const showNotice = (message, tone = 'info') => setNotice({ message, tone })
+  const toggleBreakdown = (key) => setCollapsedBreakdowns(current => ({ ...current, [key]: !current[key] }))
 
   useEffect(() => {
     if (!notice) return undefined;
@@ -211,6 +218,14 @@ function App() {
   const tripLocations = activeTrip
     ? [...new Set(tripExpenses.map(e => e.location))]
     : []
+  const tripTotal = tripExpenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
+  const receiptTotal = locationExpenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
+  const getReceiptCount = (trip) => Number.isInteger(trip.receiptCount)
+    ? trip.receiptCount
+    : new Set((trip.expenses || []).map(expense => expense.location).filter(Boolean)).size;
+  const getTripSpent = (trip) => typeof trip.totalSpent === 'number'
+    ? trip.totalSpent
+    : (trip.expenses || []).reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
 
   // ==========================================
   // CONSUMER CHIP LOGIC
@@ -219,8 +234,9 @@ function App() {
   const rawPeople = [...(activeTrip?.participants || []), ...tripExpenses.flatMap(e => [...e.involved, e.payer])];
   const uniquePeopleMap = new Map();
   rawPeople.forEach(p => {
-    if (!uniquePeopleMap.has(p.toLowerCase())) {
-      uniquePeopleMap.set(p.toLowerCase(), p); // Keeps the first capitalization it finds
+    const key = personKey(p);
+    if (key && !uniquePeopleMap.has(key)) {
+      uniquePeopleMap.set(key, String(p).trim()); // Keeps the participant's preferred capitalization
     }
   });
 
@@ -228,17 +244,59 @@ function App() {
   const myName = user?.displayName ? user.displayName.split(' ')[0] : 'Me';
 
   // Ensure current user is an option
-  if (!uniquePeopleMap.has(myName.toLowerCase())) {
+  if (!uniquePeopleMap.has(personKey(myName))) {
     existingPeople.unshift(myName);
   }
 
   const allAvailablePeople = existingPeople;
+  const normalizePerson = (name) => uniquePeopleMap.get(personKey(name)) || String(name || '').trim();
+  const normalizePeople = (people) => Array.from(new Map(
+    (people || []).map(person => {
+      const normalized = normalizePerson(person);
+      return [personKey(normalized), normalized];
+    }).filter(([key]) => Boolean(key))
+  ).values());
+  const tripParticipants = normalizePeople(activeTrip?.participants || []);
+  const tripSpenderTotals = tripExpenses.reduce((totals, expense) => {
+    const consumers = normalizePeople(expense.involved);
+    if (consumers.length === 0) return totals;
+    const itemSubtotal = Number(expense.originalPrice ?? expense.amount) || 0;
+    const sharePerPerson = itemSubtotal / consumers.length;
+    consumers.forEach(person => {
+      totals[person] = (totals[person] || 0) + sharePerPerson;
+    });
+    return totals;
+  }, Object.fromEntries(tripParticipants.map(person => [person, 0])));
+  const rankedSpenders = Object.entries(tripSpenderTotals).sort(([, firstTotal], [, secondTotal]) => firstTotal - secondTotal);
+  const lowestSpender = rankedSpenders[0] || ['No payments yet', 0];
+  const biggestSpender = rankedSpenders[rankedSpenders.length - 1] || ['No payments yet', 0];
+  const tripReceiptTotals = tripExpenses.reduce((totals, expense) => {
+    const location = String(expense.location || '').trim() || 'Untitled receipt';
+    totals[location] = (totals[location] || 0) + (Number(expense.amount) || 0);
+    return totals;
+  }, {});
+  const rankedReceipts = Object.entries(tripReceiptTotals).sort(([, firstTotal], [, secondTotal]) => firstTotal - secondTotal);
+  const lowestReceipt = rankedReceipts[0] || ['No receipts yet', 0];
+  const biggestReceipt = rankedReceipts[rankedReceipts.length - 1] || ['No receipts yet', 0];
+  const receiptsCoveredByPerson = tripExpenses.reduce((coverage, expense) => {
+    const payer = normalizePerson(expense.payer);
+    const location = String(expense.location || '').trim();
+    if (!payer || !location) return coverage;
+    if (!coverage[payer]) coverage[payer] = new Set();
+    coverage[payer].add(location);
+    return coverage;
+  }, {});
+  const topReceiptCoverer = Object.entries(receiptsCoveredByPerson)
+    .map(([person, locations]) => [person, locations.size])
+    .sort(([, firstCount], [, secondCount]) => firstCount - secondCount)
+    .at(-1) || ['No one yet', 0];
 
   const toggleConsumer = (name) => {
-    if (selectedConsumers.includes(name)) {
-      setSelectedConsumers(selectedConsumers.filter(n => n !== name));
+    const key = personKey(name);
+    if (selectedConsumers.some(person => personKey(person) === key)) {
+      setSelectedConsumers(selectedConsumers.filter(person => personKey(person) !== key));
     } else {
-      setSelectedConsumers([...selectedConsumers, name]);
+      setSelectedConsumers([...selectedConsumers, normalizePerson(name)]);
     }
   }
 
@@ -395,7 +453,7 @@ function App() {
     const batchExpenses = tripExpenses.filter(e => e.location === location);
     if (batchExpenses.length === 0) return;
 
-    const commonPayer = batchExpenses[0].payer;
+    const commonPayer = normalizePerson(batchExpenses[0].payer);
     const totalTax = batchExpenses.reduce((sum, e) => sum + e.taxShare, 0);
     const totalTip = batchExpenses.reduce((sum, e) => sum + e.tipShare, 0);
 
@@ -404,7 +462,7 @@ function App() {
       qty: e.rawQty || 1,
       unitPrice: e.rawUnitPrice || (e.originalPrice / (e.rawQty || 1)),
       totalPrice: e.originalPrice,
-      consumers: e.involved
+      consumers: normalizePeople(e.involved)
     }));
 
     setReceiptLoc(location);
@@ -680,6 +738,8 @@ function App() {
         expenses: [],
         expenseStorageVersion: 2,
         expenseCount: legacyExpenses.length,
+        receiptCount: new Set(legacyExpenses.map(expense => expense.location).filter(Boolean)).size,
+        totalSpent: legacyExpenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0),
         lastUpdated: new Date()
       });
       await batch.commit();
@@ -703,6 +763,8 @@ function App() {
       expenses: [],
       expenseStorageVersion: 2,
       expenseCount: 0,
+      receiptCount: 0,
+      totalSpent: 0,
       joinCode: generatedCode,
       ownerId: user.uid,
       admins: [user.uid],
@@ -827,7 +889,13 @@ function App() {
           if (activeTrip.expenseStorageVersion === 2) {
             const batch = writeBatch(db);
             batch.delete(doc(db, 'shared_trips', activeTripId, 'expenses', String(expenseId)));
-            batch.update(doc(db, 'shared_trips', activeTripId), { expenseCount: increment(-1), lastUpdated: new Date() });
+            const remainingExpenses = tripExpenses.filter(item => item.id !== expenseId);
+            batch.update(doc(db, 'shared_trips', activeTripId), {
+              expenseCount: increment(-1),
+              receiptCount: new Set(remainingExpenses.map(item => item.location).filter(Boolean)).size,
+              totalSpent: remainingExpenses.reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
+              lastUpdated: new Date()
+            });
             await batch.commit();
             setResults([]);
             setHasCalculated(false);
@@ -835,7 +903,11 @@ function App() {
             return;
           }
           const updatedExpenses = tripExpenses.filter(item => item.id !== expenseId);
-          const saved = await updateTripInCloud(activeTripId, { expenses: updatedExpenses });
+          const saved = await updateTripInCloud(activeTripId, {
+            expenses: updatedExpenses,
+            receiptCount: new Set(updatedExpenses.map(item => item.location).filter(Boolean)).size,
+            totalSpent: updatedExpenses.reduce((sum, item) => sum + (Number(item.amount) || 0), 0)
+          });
           if (saved) {
             setResults([]);
             setHasCalculated(false);
@@ -857,17 +929,22 @@ function App() {
     ).join(' ');
     if ((activeTrip.participants || []).some(person => person.toLowerCase() === name.toLowerCase())) {
       setNewParticipantName('');
+      setIsAddingParticipant(false);
       return;
     }
     await updateTripInCloud(activeTripId, { participants: [...(activeTrip.participants || []), name] });
     setNewParticipantName('');
+    setIsAddingParticipant(false);
   };
 
   const removeTripParticipant = async (name) => {
     if (!activeTrip) return;
-    const isUsed = tripExpenses.some(expense => expense.payer === name || expense.involved.includes(name));
+    const targetKey = personKey(name);
+    const isUsed = tripExpenses.some(expense => personKey(expense.payer) === targetKey || expense.involved.some(person => personKey(person) === targetKey));
     if (isUsed) return showNotice(`${name} is included on a receipt and cannot be removed.`, 'error');
-    await updateTripInCloud(activeTripId, { participants: (activeTrip.participants || []).filter(person => person !== name) });
+    await updateTripInCloud(activeTripId, { participants: (activeTrip.participants || []).filter(person => personKey(person) !== targetKey) });
+    setParticipantToRemove('');
+    setIsRemovingParticipant(false);
   };
 
   const handleSaveTripName = async () => {
@@ -905,7 +982,7 @@ function App() {
   const editSavedExpense = (expense) => {
     setEditingTripExpenseId(expense.id)
     setReceiptLoc(expense.location)
-    setReceiptPayer(expense.payer)
+    setReceiptPayer(normalizePerson(expense.payer))
 
     const name = expense.rawName || expense.item.replace(/^\d+x\s/, '')
     const qty = expense.rawQty || 1
@@ -916,7 +993,7 @@ function App() {
       qty: qty,
       unitPrice: price,
       totalPrice: expense.originalPrice,
-      consumers: expense.involved
+      consumers: normalizePeople(expense.involved)
     }
     setCurrentItems([reconstructedItem])
 
@@ -943,7 +1020,11 @@ function App() {
       const response = await fetch('/api/calculate', {
         method: 'POST',
         headers,
-        body: JSON.stringify(tripExpenses),
+        body: JSON.stringify(tripExpenses.map(expense => ({
+          ...expense,
+          payer: normalizePerson(expense.payer),
+          involved: normalizePeople(expense.involved)
+        }))),
       });
 
       if (!response.ok) {
@@ -1022,9 +1103,9 @@ function App() {
         id: createExpenseId(),
         item: `${item.qty}x ${item.name}`,
         location: receiptLoc,
-        payer: receiptPayer,
+        payer: normalizePerson(receiptPayer),
         amount: item.totalPrice + itemTax + itemTip,
-        involved: item.consumers,
+        involved: normalizePeople(item.consumers),
         rawName: item.name,
         rawQty: item.qty,
         rawUnitPrice: item.unitPrice,
@@ -1061,12 +1142,16 @@ function App() {
         });
         batch.update(tripRef, {
           expenseCount: increment(newExpenses.length - replacedExpenses.length),
+          receiptCount: new Set([...finalExpensesList, ...newExpenses].map(expense => expense.location).filter(Boolean)).size,
+          totalSpent: [...finalExpensesList, ...newExpenses].reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0),
           lastUpdated: new Date()
         });
         await batch.commit();
       } else {
         await updateDoc(tripRef, {
           expenses: [...finalExpensesList, ...newExpenses],
+          receiptCount: new Set([...finalExpensesList, ...newExpenses].map(expense => expense.location).filter(Boolean)).size,
+          totalSpent: [...finalExpensesList, ...newExpenses].reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0),
           lastUpdated: new Date()
         });
       }
@@ -1087,7 +1172,9 @@ function App() {
   const getBreakdown = (expensesList) => {
     const breakdown = {}
     expensesList.forEach(exp => {
-      const numPeople = exp.involved.length
+      const involvedPeople = normalizePeople(exp.involved)
+      const numPeople = involvedPeople.length
+      if (numPeople === 0) return
       const splitPrice = exp.originalPrice / numPeople
       const splitTax = exp.taxShare / numPeople
       const splitTip = exp.tipShare / numPeople
@@ -1107,7 +1194,7 @@ function App() {
         displayName = `(Split) ${strippedName}`;
       }
 
-      exp.involved.forEach(person => {
+      involvedPeople.forEach(person => {
         if (!breakdown[person]) {
           breakdown[person] = { items: [], subtotal: 0, tax: 0, tip: 0, grandTotal: 0 }
         }
@@ -1199,7 +1286,7 @@ function App() {
           </div>
 
           <div className="create-bar-container">
-            <div className="action-panel">
+            <div className="action-panel action-panel-create">
               <div className="action-title"><span className="action-icon">+</span>Create Trip</div>
               <div className="create-bar">
                 <input
@@ -1209,11 +1296,11 @@ function App() {
                   onChange={e => setNewFolderName(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && createFolder()}
                 />
-                <button className="btn-icon" onClick={createFolder}>Create</button>
+                <button className="btn-icon create-trip-button" onClick={createFolder}>Create</button>
               </div>
             </div>
 
-            <div className="action-panel">
+            <div className="action-panel action-panel-join">
               <div className="action-title"><span className="action-icon">#</span>Join Trip</div>
               <div className="create-bar">
                 <input
@@ -1224,7 +1311,7 @@ function App() {
                   onChange={e => setJoinCodeInput(e.target.value.toUpperCase())}
                   onKeyDown={(e) => e.key === 'Enter' && handleJoinTrip(joinCodeInput)}
                 />
-                <button className="btn-icon" onClick={() => handleJoinTrip(joinCodeInput)}>Join</button>
+                <button className="btn-icon join-trip-button" onClick={() => handleJoinTrip(joinCodeInput)}>Join</button>
               </div>
             </div>
           </div>
@@ -1280,8 +1367,12 @@ function App() {
                       <div className="folder-info">
                         <div className="folder-name">{trip.name}</div>
                         <div className="folder-meta" style={uploadedCover ? { color: '#f1f5f9' } : {}}>
-                          <span>{trip.expenseStorageVersion === 2 ? (trip.expenseCount || 0) : (trip.expenses?.length || 0)} expenses</span>
+                          <span>{getReceiptCount(trip)} receipt{getReceiptCount(trip) === 1 ? '' : 's'}</span>
+                          <span className="meta-dot">{trip.expenseStorageVersion === 2 ? (trip.expenseCount || 0) : (trip.expenses?.length || 0)} expenses</span>
                           <span className="meta-dot">{trip.members?.length || 1} members</span>
+                        </div>
+                        <div className="home-trip-total" style={uploadedCover ? { textShadow: '0 1px 3px rgba(0,0,0,.85)' } : {}}>
+                          <span>Total spent</span><strong>${getTripSpent(trip).toFixed(2)}</strong>
                         </div>
                         <div className="folder-date" style={uploadedCover ? { color: '#e2e8f0' } : {}}>
                           Updated {new Date(trip.lastUpdated?.toMillis?.() || trip.lastUpdated).toLocaleDateString()}
@@ -1303,29 +1394,29 @@ function App() {
       {view === 'trip_view' && activeTrip && (
         <div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', marginBottom: '20px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              {isEditingTitle ? (
-                <input
-                  className="header-title-input"
-                  value={tempTitle}
-                  onChange={(e) => setTempTitle(e.target.value)}
-                  onBlur={handleSaveTripName}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSaveTripName()}
-                  autoFocus
-                />
-              ) : (
-                <h1 className="header-title" onClick={() => { setIsEditingTitle(true); setTempTitle(activeTrip.name); }}>
-                  {activeTrip.name} <span style={{ fontSize: '1rem', opacity: 0.5, marginLeft: '10px', cursor: 'pointer', verticalAlign: 'middle' }}>✎</span>
-                </h1>
-              )}
-            </div>
+            <div className="trip-overview-heading">
+              <div className="trip-title-group">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  {isEditingTitle ? (
+                    <input
+                      className="header-title-input"
+                      value={tempTitle}
+                      onChange={(e) => setTempTitle(e.target.value)}
+                      onBlur={handleSaveTripName}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSaveTripName()}
+                      autoFocus
+                    />
+                  ) : (
+                    <h1 className="header-title trip-page-title" onClick={() => { setIsEditingTitle(true); setTempTitle(activeTrip.name); }}>
+                      {activeTrip.name} <span style={{ fontSize: '1rem', opacity: 0.5, marginLeft: '10px', cursor: 'pointer', verticalAlign: 'middle' }}>✎</span>
+                    </h1>
+                  )}
+                </div>
+              </div>
 
-            <div style={{
-              background: 'rgba(255, 255, 255, 0.1)', border: '1px solid rgba(255, 255, 255, 0.2)', padding: '6px 12px',
-              borderRadius: '12px', width: 'fit-content', fontSize: '0.85rem', color: 'var(--primary-glow)', display: 'flex', gap: '8px', alignItems: 'center'
-            }}>
-              <span style={{ opacity: 0.7 }}>Invite Code:</span>
-              <strong style={{ letterSpacing: '1px', color: 'white' }}>{activeTrip.joinCode || '------'}</strong>
+              <div className="trip-invite-code">
+              <span>Invite code</span>
+              <strong>{activeTrip.joinCode || '------'}</strong>
               <button
                 className="copy-code-button"
                 type="button"
@@ -1341,24 +1432,61 @@ function App() {
                 title="Copy invite code"
                 aria-label="Copy invite code"
               >📋</button>
+              </div>
             </div>
+            <aside className="trip-spend-summary trip-spend-summary-wide" aria-label="Trip spending summary">
+              <div className="trip-spend-marquee">
+                <div className="trip-spend-track">
+                  {[0, 1].map(copy => (
+                    <div className="trip-spend-stat-set" key={copy} aria-hidden={copy === 1}>
+                      <div className="trip-spend-stat total-spend-stat"><span>Total spent</span><strong>${tripTotal.toFixed(2)}</strong></div>
+                      <div className="trip-spend-stat biggest-spend-stat"><span>Biggest spender</span><strong>{biggestSpender[0]} · ${biggestSpender[1].toFixed(2)}</strong></div>
+                      <div className="trip-spend-stat lowest-spend-stat"><span>Lowest spender</span><strong>{lowestSpender[0]} · ${lowestSpender[1].toFixed(2)}</strong></div>
+                      <div className="trip-spend-stat biggest-receipt-stat"><span>Most expensive receipt</span><strong>{biggestReceipt[0]} · ${biggestReceipt[1].toFixed(2)}</strong></div>
+                      <div className="trip-spend-stat lowest-receipt-stat"><span>Least expensive receipt</span><strong>{lowestReceipt[0]} · ${lowestReceipt[1].toFixed(2)}</strong></div>
+                      <div className="trip-spend-stat receipt-coverer-stat"><span>Most receipts covered</span><strong>Thanks, {topReceiptCoverer[0]} · {topReceiptCoverer[1]} receipt{topReceiptCoverer[1] === 1 ? '' : 's'}</strong></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </aside>
 
             <section className="participants-panel">
-              <div>
-                <h2>Trip participants</h2>
-                <p>Add everyone once; their names will be available on every receipt.</p>
+              <div className="participants-heading">
+                <div>
+                  <h2>Trip participants</h2>
+                  <p>Add everyone once; their names will be available on every receipt.</p>
+                </div>
+                <div className="participant-actions">
+                  {!isAddingParticipant && (
+                    <button className="participant-add-button" type="button" onClick={() => { setIsRemovingParticipant(false); setIsAddingParticipant(true); }}>+ Add participant</button>
+                  )}
+                  {!isRemovingParticipant && tripParticipants.length > 0 && (
+                    <button className="participant-remove-button" type="button" onClick={() => { setIsAddingParticipant(false); setIsRemovingParticipant(true); setParticipantToRemove(tripParticipants[0] || ''); }}>Remove participant</button>
+                  )}
+                </div>
               </div>
               <div className="participant-list">
-                {(activeTrip.participants || []).map(person => (
-                  <span className="participant-chip" key={person}>{person}
-                    <button type="button" onClick={() => removeTripParticipant(person)} aria-label={`Remove ${person}`}>×</button>
-                  </span>
+                {tripParticipants.map(person => (
+                  <span className="participant-chip" key={person}>{person}</span>
                 ))}
               </div>
-              <form className="participant-form" onSubmit={addTripParticipant}>
-                <input value={newParticipantName} onChange={event => setNewParticipantName(event.target.value)} placeholder="Add a name" maxLength={60} />
-                <button className="btn btn-primary" type="submit">Add participant</button>
-              </form>
+              {isAddingParticipant && (
+                <form className="participant-form" onSubmit={addTripParticipant}>
+                  <input autoFocus value={newParticipantName} onChange={event => setNewParticipantName(event.target.value)} placeholder="Name" maxLength={60} />
+                  <button className="btn btn-primary" type="submit">Add</button>
+                  <button className="participant-cancel-button" type="button" onClick={() => { setNewParticipantName(''); setIsAddingParticipant(false); }}>Cancel</button>
+                </form>
+              )}
+              {isRemovingParticipant && (
+                <div className="participant-form participant-remove-form">
+                  <select value={participantToRemove} onChange={event => setParticipantToRemove(event.target.value)} aria-label="Participant to remove">
+                    {tripParticipants.map(person => <option key={person} value={person}>{person}</option>)}
+                  </select>
+                  <button className="participant-remove-confirm" type="button" onClick={() => removeTripParticipant(participantToRemove)}>Remove</button>
+                  <button className="participant-cancel-button" type="button" onClick={() => { setParticipantToRemove(''); setIsRemovingParticipant(false); }}>Cancel</button>
+                </div>
+              )}
             </section>
 
             {!isTripManager(activeTrip) && (
@@ -1409,12 +1537,23 @@ function App() {
                         <button className="cover-remove-button receipt-cover-remove" type="button" onClick={event => { event.stopPropagation(); removeReceiptCover(loc); }}>Remove cover</button>
                       )}
                       {!coverImage && (
-                        <label className="receipt-color-select" onClick={event => event.stopPropagation()}>
-                          Color
-                          <select value={cardColor} onChange={event => updateReceiptColor(loc, event.target.value)}>
-                            {receiptColorOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-                          </select>
-                        </label>
+                        <div className="receipt-color-select" role="group" aria-label={`Card color for ${loc}`} onClick={event => event.stopPropagation()}>
+                          <span>Color</span>
+                          <div className="receipt-color-swatches">
+                            {receiptColorOptions.map(option => (
+                              <button
+                                key={option.value}
+                                type="button"
+                                className={`receipt-color-swatch${cardColor === option.value ? ' is-selected' : ''}`}
+                                style={{ backgroundColor: option.value }}
+                                onClick={() => updateReceiptColor(loc, option.value)}
+                                aria-label={`Use ${option.label.toLowerCase()} card color`}
+                                aria-pressed={cardColor === option.value}
+                                title={option.label}
+                              />
+                            ))}
+                          </div>
+                        </div>
                       )}
                     </div>
                   )
@@ -1490,22 +1629,26 @@ function App() {
                 <div style={{ marginTop: '30px' }}>
                   <h3 style={{ marginBottom: '15px', paddingLeft: '10px' }}>Total Trip Breakdown</h3>
                   <div className="breakdown-grid">
-                    {Object.entries(getBreakdown(tripExpenses)).map(([person, data]) => (
-                      <div key={person} className="spreadsheet-card">
-                        <div className="spreadsheet-header">{person}</div>
-                        <div className="spreadsheet-body">
-                          {data.items.map((i, idx) => (
-                            <div key={idx} className="line-item"><span>{i.name} <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>({i.location})</span></span><span>{i.cost.toFixed(2)}</span></div>
-                          ))}
+                    {Object.entries(getBreakdown(tripExpenses)).map(([person, data]) => {
+                      const breakdownKey = `trip:${person}`;
+                      const isCollapsed = collapsedBreakdowns[breakdownKey];
+                      return (
+                        <div key={person} className={`spreadsheet-card${isCollapsed ? ' is-collapsed' : ''}`}>
+                          <button className="spreadsheet-header breakdown-toggle" type="button" onClick={() => toggleBreakdown(breakdownKey)} aria-expanded={!isCollapsed}>
+                            <span>{person}</span><span aria-hidden="true">{isCollapsed ? '⌄' : '⌃'}</span>
+                          </button>
+                          {!isCollapsed && <div className="spreadsheet-body">
+                            {data.items.map((i, idx) => (
+                              <div key={idx} className="line-item"><span>{i.name} <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>({i.location})</span></span><span>{i.cost.toFixed(2)}</span></div>
+                            ))}
+                          </div>}
+                          <div className="spreadsheet-footer">
+                            <div className="summary-row"><span>Subtotal</span><span>{data.subtotal.toFixed(2)}</span></div>
+                            <div className="grand-total-row"><span>TOTAL</span><span>${data.grandTotal.toFixed(2)}</span></div>
+                          </div>
                         </div>
-                        <div className="spreadsheet-footer">
-                          <div className="summary-row"><span>Subtotal</span><span>{data.subtotal.toFixed(2)}</span></div>
-                          <div className="summary-row"><span>Tax</span><span>{data.tax.toFixed(2)}</span></div>
-                          <div className="summary-row"><span>Tip</span><span>{data.tip.toFixed(2)}</span></div>
-                          <div className="grand-total-row"><span>TOTAL</span><span>${data.grandTotal.toFixed(2)}</span></div>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -1518,11 +1661,16 @@ function App() {
       {view === 'receipt_detail' && activeLocation && (
         <div className="container print-container">
           <div className="no-print">
-            <button className="back-btn" onClick={() => setView('trip_view')} style={{ marginBottom: '20px' }}>← Back to Trip</button>
+            <button className="back-btn" onClick={() => setView('trip_view')} style={{ marginBottom: '12px' }}>← Back to Trip</button>
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+          <div className="receipt-detail-heading">
             <h1 className="header-title" style={{ margin: 0 }}>{activeLocation} <span className="no-print" style={{ fontSize: '0.5em', opacity: 0.5 }}>Receipt</span></h1>
+            <aside className="receipt-spend-summary" aria-label="Receipt spending summary">
+              <span>Receipt total</span>
+              <strong>${receiptTotal.toFixed(2)}</strong>
+              <small>{locationExpenses.length} item{locationExpenses.length === 1 ? '' : 's'}</small>
+            </aside>
           </div>
 
           <div className="action-bar no-print">
@@ -1538,8 +1686,8 @@ function App() {
           </div>
 
           {activeTrip.receiptImages && activeTrip.receiptImages[activeLocation] && (
-            <div style={{ marginBottom: '20px', borderRadius: '12px', overflow: 'hidden', border: '1px solid var(--glass-border)', boxShadow: '0 10px 30px rgba(0,0,0,0.3)' }}>
-              <img src={activeTrip.receiptImages[activeLocation]} alt="Receipt" style={{ width: '100%', maxHeight: '400px', objectFit: 'contain', background: 'rgba(0,0,0,0.2)', display: 'block' }} />
+            <div className="receipt-photo-preview">
+              <img src={activeTrip.receiptImages[activeLocation]} alt="Receipt" />
             </div>
           )}
 
@@ -1571,22 +1719,26 @@ function App() {
             <div>
               <h3 style={{ marginTop: 0, marginBottom: '15px', paddingLeft: '10px' }}>Split Breakdown</h3>
               <div className="breakdown-grid">
-                {Object.entries(getBreakdown(locationExpenses)).map(([person, data]) => (
-                  <div key={person} className="spreadsheet-card">
-                    <div className="spreadsheet-header">{person}</div>
-                    <div className="spreadsheet-body">
-                      {data.items.map((i, idx) => (
-                        <div key={idx} className="line-item"><span>{i.name}</span><span>{i.cost.toFixed(2)}</span></div>
-                      ))}
+                {Object.entries(getBreakdown(locationExpenses)).map(([person, data]) => {
+                  const breakdownKey = `receipt:${activeLocation}:${person}`;
+                  const isCollapsed = collapsedBreakdowns[breakdownKey];
+                  return (
+                    <div key={person} className={`spreadsheet-card${isCollapsed ? ' is-collapsed' : ''}`}>
+                      <button className="spreadsheet-header breakdown-toggle" type="button" onClick={() => toggleBreakdown(breakdownKey)} aria-expanded={!isCollapsed}>
+                        <span>{person}</span><span aria-hidden="true">{isCollapsed ? '⌄' : '⌃'}</span>
+                      </button>
+                      {!isCollapsed && <div className="spreadsheet-body">
+                        {data.items.map((i, idx) => (
+                          <div key={idx} className="line-item"><span>{i.name}</span><span>{i.cost.toFixed(2)}</span></div>
+                        ))}
+                      </div>}
+                      <div className="spreadsheet-footer">
+                        <div className="summary-row"><span>Subtotal</span><span>{data.subtotal.toFixed(2)}</span></div>
+                        <div className="grand-total-row"><span>TOTAL</span><span>${data.grandTotal.toFixed(2)}</span></div>
+                      </div>
                     </div>
-                    <div className="spreadsheet-footer">
-                      <div className="summary-row"><span>Subtotal</span><span>{data.subtotal.toFixed(2)}</span></div>
-                      <div className="summary-row"><span>Tax</span><span>{data.tax.toFixed(2)}</span></div>
-                      <div className="summary-row"><span>Tip</span><span>{data.tip.toFixed(2)}</span></div>
-                      <div className="grand-total-row"><span>TOTAL</span><span>${data.grandTotal.toFixed(2)}</span></div>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>
