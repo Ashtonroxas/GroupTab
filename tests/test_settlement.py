@@ -38,3 +38,29 @@ def test_structured_settlement_is_minimized_and_uses_cents():
             'legacyLine': 'Cara owes Alice $10.00',
         },
     ]
+
+
+def test_settlements_stay_with_the_person_who_paid_the_receipt():
+    expenses = [
+        Expense('Alice', 120, ['Alice', 'Bob']),
+        Expense('Bob', 120, ['Bob', 'Cara']),
+    ]
+
+    result = calculate_settlement_details(expenses)
+
+    assert result == [
+        {
+            'id': 'settlement:Bob:Alice:6000',
+            'debtor': 'Bob',
+            'creditor': 'Alice',
+            'amount': 60.0,
+            'legacyLine': 'Bob owes Alice $60.00',
+        },
+        {
+            'id': 'settlement:Cara:Bob:6000',
+            'debtor': 'Cara',
+            'creditor': 'Bob',
+            'amount': 60.0,
+            'legacyLine': 'Cara owes Bob $60.00',
+        },
+    ]
