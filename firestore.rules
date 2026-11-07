@@ -77,13 +77,10 @@ service cloud.firestore {
           'name',
           'expenses',
           'receiptImages',
-          'receiptImagePaths',
           'receiptCovers',
-          'receiptCoverPaths',
           'receiptCoverSettings',
           'receiptColors',
           'tripCover',
-          'tripCoverPath',
           'background',
           'participants',
           'settledDebts',
@@ -143,13 +140,13 @@ service cloud.firestore {
 
     match /shared_trips/{tripId}/expenses/{expenseId} {
       function isTripMember() {
+        let trip = get(
+          /databases/$(database)/documents/shared_trips/$(tripId)
+        );
+
         return request.auth != null
-          && firestore.get(
-            /databases/$(database)/documents/shared_trips/$(tripId)
-          ).data.keys().hasAll(['members'])
-          && request.auth.uid in firestore.get(
-            /databases/$(database)/documents/shared_trips/$(tripId)
-          ).data.members;
+          && trip.data.keys().hasAll(['members'])
+          && request.auth.uid in trip.data.members;
       }
 
       allow read, create, update, delete: if isTripMember();

@@ -548,11 +548,8 @@ function App() {
     try {
       const imageDataUrl = await prepareReceiptImage(file);
       ensureInlineImageFits(activeTrip, activeTrip.receiptImages?.[location], imageDataUrl);
-      const updatedPaths = { ...(activeTrip.receiptImagePaths || {}) };
-      delete updatedPaths[location];
       const saved = await updateTripInCloud(activeTripId, {
-        receiptImages: { ...(activeTrip.receiptImages || {}), [location]: imageDataUrl },
-        receiptImagePaths: updatedPaths
+        receiptImages: { ...(activeTrip.receiptImages || {}), [location]: imageDataUrl }
       });
       if (saved) showNotice('Receipt photo uploaded.', 'success');
     } catch (err) {
@@ -571,13 +568,10 @@ function App() {
       confirmLabel: 'Remove photo',
       onConfirm: async () => {
         const updatedImages = { ...(activeTrip.receiptImages || {}) };
-        const updatedPaths = { ...(activeTrip.receiptImagePaths || {}) };
         delete updatedImages[location];
-        delete updatedPaths[location];
         try {
           await updateDoc(doc(db, 'shared_trips', activeTripId), {
             receiptImages: updatedImages,
-            receiptImagePaths: updatedPaths,
             lastUpdated: new Date()
           });
           showNotice('Receipt photo removed.', 'success');
@@ -613,7 +607,6 @@ function App() {
       ensureInlineImageFits(trip, trip.tripCover, coverDataUrl);
       await updateDoc(doc(db, 'shared_trips', trip.id), {
         tripCover: coverDataUrl,
-        tripCoverPath: '',
         lastUpdated: new Date()
       });
       showNotice('Trip cover updated.', 'success');
@@ -635,7 +628,6 @@ function App() {
         try {
           await updateDoc(doc(db, 'shared_trips', trip.id), {
             tripCover: '',
-            tripCoverPath: '',
             background: null,
             lastUpdated: new Date()
           });
@@ -677,11 +669,8 @@ function App() {
     try {
       const coverDataUrl = await prepareReceiptImage(file);
       ensureInlineImageFits(activeTrip, activeTrip.receiptCovers?.[location], coverDataUrl);
-      const updatedPaths = { ...(activeTrip.receiptCoverPaths || {}) };
-      delete updatedPaths[location];
       await updateDoc(doc(db, 'shared_trips', activeTripId), {
         receiptCovers: { ...(activeTrip.receiptCovers || {}), [location]: coverDataUrl },
-        receiptCoverPaths: updatedPaths,
         receiptCoverSettings: { ...(activeTrip.receiptCoverSettings || {}), [location]: coverCrop },
         lastUpdated: new Date()
       });
@@ -703,15 +692,12 @@ function App() {
       confirmLabel: 'Remove cover',
       onConfirm: async () => {
         const updatedCovers = { ...(activeTrip.receiptCovers || {}) };
-        const updatedPaths = { ...(activeTrip.receiptCoverPaths || {}) };
         const updatedSettings = { ...(activeTrip.receiptCoverSettings || {}) };
         delete updatedCovers[location];
-        delete updatedPaths[location];
         delete updatedSettings[location];
         try {
           await updateDoc(doc(db, 'shared_trips', activeTripId), {
             receiptCovers: updatedCovers,
-            receiptCoverPaths: updatedPaths,
             receiptCoverSettings: updatedSettings,
             lastUpdated: new Date()
           });

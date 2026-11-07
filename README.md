@@ -59,7 +59,6 @@ Edit `frontend/.env` with your Firebase credentials:
 VITE_API_KEY=your_firebase_api_key
 VITE_AUTH_DOMAIN=your-project.firebaseapp.com
 VITE_PROJECT_ID=your-project-id
-VITE_STORAGE_BUCKET=your-project.appspot.com
 VITE_MESSAGING_SENDER_ID=your_sender_id
 VITE_APP_ID=your_app_id
 ```
@@ -103,7 +102,7 @@ Visit `http://localhost:5173`
    - Add `FIREBASE_PROJECT_ID` with the same Firebase project ID so `/api/calculate` can verify signed-in users.
    - Set `CORS_ORIGINS` only when the frontend and API use different origins. The included Vercel setup serves both from one domain.
    - In Firebase Authentication, add your Vercel production domain under **Authorized domains**.
-   - Publish the repository's `firestore.rules` and `storage.rules` in the Firebase console.
+   - Publish the repository's `firestore.rules` in the Firebase console.
 
 3. **Deploy**
    ```bash
@@ -115,7 +114,7 @@ Visit `http://localhost:5173`
 
 - [ ] Add all `VITE_` Firebase values and `FIREBASE_PROJECT_ID` to Vercel Production.
 - [ ] Add the Vercel domain to Firebase Authentication's Authorized domains.
-- [ ] Publish `firestore.rules` and `storage.rules`.
+- [ ] Publish `firestore.rules`.
 - [ ] Verify Google sign-in, creating/joining a trip, photo upload, and settlement calculation on the deployment.
 - [ ] Review Vercel function logs after the first real calculation.
 
