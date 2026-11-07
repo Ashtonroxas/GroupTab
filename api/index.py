@@ -9,7 +9,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from api.settlement import calculate_settlements, Expense
+from api.settlement import calculate_settlement_details, Expense
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_talisman import Talisman
@@ -202,15 +202,15 @@ def calculate():
 
                 @limiter.limit(rate_str)
                 def _calculate_inner():
-                    return calculate_settlements(expenses_list)
+                    return calculate_settlement_details(expenses_list)
 
                 results = _calculate_inner()
             else:
-                results = calculate_settlements(expenses_list)
+                results = calculate_settlement_details(expenses_list)
         except Exception as e:
             logger.warning(
                 f"Rate limiter check failed or calculation error: {e}")
-            results = calculate_settlements(expenses_list)
+            results = calculate_settlement_details(expenses_list)
         logger.info(
             f"Successfully calculated settlements for {len(expenses_list)} expenses")
 

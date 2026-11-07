@@ -72,7 +72,8 @@ cp .env.example .env
 Edit `.env`:
 ```
 FLASK_ENV=development
-CORS_ORIGINS=http://localhost:3000
+CORS_ORIGINS=http://localhost:5173
+FIREBASE_PROJECT_ID=your-project-id
 ```
 
 ### 3. Run Locally
@@ -97,9 +98,12 @@ Visit `http://localhost:5173`
    - Push code to GitHub/GitLab
    - Connect to Vercel dashboard
 
-2. **Set Environment Variables**
-   - Add all Firebase credentials to Vercel project settings
-   - Add `CORS_ORIGINS` with your production domain
+2. **Set Production Environment Variables**
+   - Add every value from `frontend/.env.example` to Vercel, including the `VITE_` prefix.
+   - Add `FIREBASE_PROJECT_ID` with the same Firebase project ID so `/api/calculate` can verify signed-in users.
+   - Set `CORS_ORIGINS` only when the frontend and API use different origins. The included Vercel setup serves both from one domain.
+   - In Firebase Authentication, add your Vercel production domain under **Authorized domains**.
+   - Publish the repository's `firestore.rules` and `storage.rules` in the Firebase console.
 
 3. **Deploy**
    ```bash
@@ -109,13 +113,11 @@ Visit `http://localhost:5173`
 
 ### Manual Deployment Checklist
 
-- [ ] Set `FLASK_ENV=production` on Vercel
-- [ ] Update `CORS_ORIGINS` to production domain
-- [ ] Configure Firebase security rules for production
-- [ ] Enable HTTPS on custom domain
-- [ ] Set up monitoring and error tracking
-- [ ] Review security headers (included in vercel.json)
-- [ ] Test payment flows and calculations
+- [ ] Add all `VITE_` Firebase values and `FIREBASE_PROJECT_ID` to Vercel Production.
+- [ ] Add the Vercel domain to Firebase Authentication's Authorized domains.
+- [ ] Publish `firestore.rules` and `storage.rules`.
+- [ ] Verify Google sign-in, creating/joining a trip, photo upload, and settlement calculation on the deployment.
+- [ ] Review Vercel function logs after the first real calculation.
 
 ## 🔒 Security Features
 
@@ -125,8 +127,6 @@ Visit `http://localhost:5173`
 - Rate limiting (30 requests/minute on /api/calculate)
 - Security headers (X-Frame-Options, X-Content-Type-Options, etc.)
 - Input validation on all API endpoints
-- HTTP-only Firebase auth tokens
-- No console logs in production builds
 
 ## 🎨 Customization
 
@@ -138,13 +138,6 @@ Edit `frontend/src/App.css` CSS variables:
   --secondary: #3b82f6;    /* Blue */
   --bg-deep: #0f172a;      /* Background */
 }
-```
-
-### Feature Flags
-Toggle features in `frontend/.env`:
-```
-VITE_ENABLE_ANALYTICS=true
-VITE_ENABLE_ERROR_REPORTING=true
 ```
 
 ## 📊 Settlement Algorithm
@@ -249,4 +242,3 @@ Planned features:
 ---
 
 **Built with ❤️ for making expense-splitting simple and fair.**
-

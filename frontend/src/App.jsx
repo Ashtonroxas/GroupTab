@@ -2,9 +2,8 @@ import { useState, useEffect } from 'react'
 import './App.css'
 
 // --- FIREBASE IMPORTS ---
-import { auth, googleProvider, db, storage } from './firebase'
+import { auth, googleProvider, db } from './firebase'
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage'
 import {
   doc,
   setDoc,
@@ -16,6 +15,7 @@ import {
   arrayUnion,
   arrayRemove, // Added for un-settling debts
   deleteDoc,
+  increment,
   writeBatch
 } from 'firebase/firestore'
 
@@ -30,17 +30,112 @@ const GoogleIcon = () => (
 );
 
 const tripCardEmojis = ['🧳', '🌎', '🏝️', '🏔️', '🏙️', '🗺️', '🚗', '🚆', '🚢', '🏕️', '🌅', '📍'];
+const receiptColorOptions = [
+  { value: '#182235', label: 'Default' },
+  { value: '#1e3a5f', label: 'Blue' },
+  { value: '#164e63', label: 'Teal' },
+  { value: '#365314', label: 'Green' },
+  { value: '#78350f', label: 'Amber' },
+  { value: '#701a75', label: 'Purple' },
+  { value: '#7f1d1d', label: 'Red' }
+];
+const MAX_INLINE_IMAGE_CHARS = 260000;
+const MAX_TRIP_INLINE_IMAGE_CHARS = 800000;
+
+const inlineImageChars = (value) => (
+  typeof value === 'string' && value.includes('data:image/') ? value.length : 0
+);
+
+const getTripInlineImageChars = (trip) => (
+  inlineImageChars(trip?.tripCover)
+  + inlineImageChars(trip?.background)
+  + Object.values(trip?.receiptImages || {}).reduce((total, image) => total + inlineImageChars(image), 0)
+  + Object.values(trip?.receiptCovers || {}).reduce((total, image) => total + inlineImageChars(image), 0)
+);
+
+const ensureInlineImageFits = (trip, previousImage, nextImage) => {
+  if (nextImage.length > MAX_INLINE_IMAGE_CHARS) {
+    throw new Error('This image is still too large after compression.');
+  }
+  if (getTripInlineImageChars(trip) - inlineImageChars(previousImage) + nextImage.length > MAX_TRIP_INLINE_IMAGE_CHARS) {
+    throw new Error('This trip already has too many saved image bytes.');
+  }
+};
 
 // Legacy trip covers share a field with the removed AI backgrounds. Keep only
 // device-uploaded image data and deliberately ignore remote/generated URLs.
 const getUploadedTripCover = (trip) => {
-  if (typeof trip.tripCover === 'string' && trip.tripCover.startsWith('https://')) {
+  if (typeof trip.tripCover === 'string' && (trip.tripCover.startsWith('https://') || trip.tripCover.startsWith('data:image/'))) {
     return `url("${trip.tripCover}")`;
   }
   return typeof trip.background === 'string' && trip.background.startsWith('url(data:image/')
     ? trip.background
     : null;
 };
+
+const createExpenseId = () => globalThis.crypto?.randomUUID?.()
+  || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+const inviteCodeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const createInviteCode = () => {
+  const values = new Uint32Array(8);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(values);
+    return Array.from(values, value => inviteCodeAlphabet[value % inviteCodeAlphabet.length]).join('');
+  }
+  return Array.from({ length: 8 }, () => inviteCodeAlphabet[Math.floor(Math.random() * inviteCodeAlphabet.length)]).join('');
+};
+
+const personKey = (name) => String(name || '').trim().toLocaleLowerCase();
+
+function NoticeRegion({ notice, onDismiss }) {
+  if (!notice) return null;
+
+  return (
+    <div className="notice-region" aria-live="polite" aria-atomic="true">
+      <div className={`notice notice-${notice.tone || 'info'}`} role={notice.tone === 'error' ? 'alert' : 'status'}>
+        <span>{notice.message}</span>
+        <button type="button" onClick={onDismiss} aria-label="Dismiss message">×</button>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmationDialog({ confirmation, onCancel, onConfirm }) {
+  if (!confirmation) return null;
+
+  return (
+    <div className="dialog-backdrop" role="presentation" onMouseDown={onCancel}>
+      <section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="confirmation-title" onMouseDown={event => event.stopPropagation()}>
+        <p className="dialog-eyebrow">Please confirm</p>
+        <h2 id="confirmation-title">{confirmation.title}</h2>
+        <p>{confirmation.message}</p>
+        {confirmation.confirmationPhrase && (
+          <label className="confirmation-input">
+            Type <strong>{confirmation.confirmationPhrase}</strong> to continue
+            <input
+              value={confirmation.value || ''}
+              onChange={event => confirmation.setValue(event.target.value)}
+              autoComplete="off"
+              autoFocus
+            />
+          </label>
+        )}
+        <div className="dialog-actions">
+          <button className="back-btn" type="button" onClick={onCancel}>Cancel</button>
+          <button
+            className="btn btn-danger"
+            type="button"
+            onClick={onConfirm}
+            disabled={Boolean(confirmation.confirmationPhrase && confirmation.value !== confirmation.confirmationPhrase)}
+          >
+            {confirmation.confirmLabel || 'Delete'}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
 
 function App() {
   // --- USER STATE ---
@@ -58,6 +153,8 @@ function App() {
   const [tripSort, setTripSort] = useState('newest')
   const [isClearingTrips, setIsClearingTrips] = useState(false)
   const [tripEmojiMap, setTripEmojiMap] = useState({})
+  const [subcollectionExpenses, setSubcollectionExpenses] = useState([])
+  const [isUpgradingExpenses, setIsUpgradingExpenses] = useState(false)
 
   // --- EDITING STATES ---
   const [isEditingTitle, setIsEditingTitle] = useState(false)
@@ -77,10 +174,10 @@ function App() {
   const [unitPrice, setUnitPrice] = useState('')
   const [quantity, setQuantity] = useState(1)
   const [selectedConsumers, setSelectedConsumers] = useState([])
-  const [sessionPeople, setSessionPeople] = useState([])
-  const [newPersonName, setNewPersonName] = useState('')
   const [newParticipantName, setNewParticipantName] = useState('')
-  const [hoveredChip, setHoveredChip] = useState(null) // NEW: Tracks which chip is being hovered
+  const [isAddingParticipant, setIsAddingParticipant] = useState(false)
+  const [isRemovingParticipant, setIsRemovingParticipant] = useState(false)
+  const [participantToRemove, setParticipantToRemove] = useState('')
 
   // EDITING EXPENSE STATE
   const [editingIndex, setEditingIndex] = useState(null)
@@ -89,16 +186,40 @@ function App() {
 
   // Results
   const [results, setResults] = useState([])
+  const [hasCalculated, setHasCalculated] = useState(false)
+  const [collapsedBreakdowns, setCollapsedBreakdowns] = useState({})
   const [isLoading, setIsLoading] = useState(false)
   const [coverUploads, setCoverUploads] = useState({})
   const [tripCoverUploads, setTripCoverUploads] = useState({})
+  const [receiptImageUploads, setReceiptImageUploads] = useState({})
   const [coverEditor, setCoverEditor] = useState(null)
   const [coverCrop, setCoverCrop] = useState({ positionX: 50, positionY: 50, zoom: 1 })
+  const [notice, setNotice] = useState(null)
+  const [confirmation, setConfirmation] = useState(null)
+
+  const showNotice = (message, tone = 'info') => setNotice({ message, tone })
+  const toggleBreakdown = (key) => setCollapsedBreakdowns(current => ({ ...current, [key]: !current[key] }))
+
+  useEffect(() => {
+    if (!notice) return undefined;
+    const timeout = window.setTimeout(() => setNotice(null), 5000);
+    return () => window.clearTimeout(timeout);
+  }, [notice]);
+
+  const closeConfirmation = () => setConfirmation(null)
+  const confirmAction = async () => {
+    const action = confirmation?.onConfirm;
+    setConfirmation(null);
+    await action?.();
+  }
 
   // ==========================================
   // HELPER: GET DATA
   // ==========================================
   const activeTrip = trips.find(t => t.id === activeTripId)
+  const tripExpenses = activeTrip?.expenseStorageVersion === 2
+    ? subcollectionExpenses
+    : activeTrip?.expenses || [];
   const isTripManager = (trip) => {
     if (!user || !trip) return false;
     if (trip.ownerId) return trip.ownerId === user.uid || trip.admins?.includes(user.uid);
@@ -108,7 +229,7 @@ function App() {
   const getTimestamp = (value) => value?.toMillis?.() || new Date(value || 0).getTime() || 0;
 
   const locationExpenses = activeTrip
-    ? activeTrip.expenses.filter(e => e.location === activeLocation).sort((a, b) => {
+    ? tripExpenses.filter(e => e.location === activeLocation).sort((a, b) => {
       const dateA = a.createdAt instanceof Object ? a.createdAt.toMillis?.() || new Date(a.createdAt).getTime() : new Date(a.createdAt).getTime();
       const dateB = b.createdAt instanceof Object ? b.createdAt.toMillis?.() || new Date(b.createdAt).getTime() : new Date(b.createdAt).getTime();
       return dateB - dateA;
@@ -116,18 +237,27 @@ function App() {
     : []
 
   const tripLocations = activeTrip
-    ? [...new Set(activeTrip.expenses.map(e => e.location))]
+    ? [...new Set(tripExpenses.map(e => e.location))]
     : []
+  const tripTotal = tripExpenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
+  const receiptTotal = locationExpenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
+  const getReceiptCount = (trip) => Number.isInteger(trip.receiptCount)
+    ? trip.receiptCount
+    : new Set((trip.expenses || []).map(expense => expense.location).filter(Boolean)).size;
+  const getTripSpent = (trip) => typeof trip.totalSpent === 'number'
+    ? trip.totalSpent
+    : (trip.expenses || []).reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
 
   // ==========================================
   // CONSUMER CHIP LOGIC
   // ==========================================
   // 1. Extract raw people and filter out duplicates ignoring case
-  const rawPeople = [...(activeTrip?.participants || []), ...(activeTrip?.expenses?.flatMap(e => [...e.involved, e.payer]) || [])];
+  const rawPeople = [...(activeTrip?.participants || []), ...tripExpenses.flatMap(e => [...e.involved, e.payer])];
   const uniquePeopleMap = new Map();
   rawPeople.forEach(p => {
-    if (!uniquePeopleMap.has(p.toLowerCase())) {
-      uniquePeopleMap.set(p.toLowerCase(), p); // Keeps the first capitalization it finds
+    const key = personKey(p);
+    if (key && !uniquePeopleMap.has(key)) {
+      uniquePeopleMap.set(key, String(p).trim()); // Keeps the participant's preferred capitalization
     }
   });
 
@@ -135,43 +265,59 @@ function App() {
   const myName = user?.displayName ? user.displayName.split(' ')[0] : 'Me';
 
   // Ensure current user is an option
-  if (!uniquePeopleMap.has(myName.toLowerCase())) {
+  if (!uniquePeopleMap.has(personKey(myName))) {
     existingPeople.unshift(myName);
   }
 
-  const allAvailablePeople = Array.from(new Set([...existingPeople, ...sessionPeople]));
-
-  const handleAddNewPerson = (e) => {
-    e.preventDefault();
-    if (!newPersonName.trim()) return;
-
-    // Auto-capitalize the typed name (e.g., "john" -> "John", "el john" -> "El John")
-    const formattedName = newPersonName
-      .trim()
-      .split(/\s+/)
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-      .join(' ');
-
-    // Check if a variation of this name already exists (prevents duplicate chips)
-    const existingMatch = allAvailablePeople.find(p => p.toLowerCase() === formattedName.toLowerCase());
-    const finalNameToUse = existingMatch || formattedName;
-
-    if (!existingMatch && !sessionPeople.includes(finalNameToUse)) {
-      setSessionPeople([...sessionPeople, finalNameToUse]);
-    }
-
-    if (!selectedConsumers.includes(finalNameToUse)) {
-      setSelectedConsumers([...selectedConsumers, finalNameToUse]);
-    }
-
-    setNewPersonName('');
-  }
+  const allAvailablePeople = existingPeople;
+  const normalizePerson = (name) => uniquePeopleMap.get(personKey(name)) || String(name || '').trim();
+  const normalizePeople = (people) => Array.from(new Map(
+    (people || []).map(person => {
+      const normalized = normalizePerson(person);
+      return [personKey(normalized), normalized];
+    }).filter(([key]) => Boolean(key))
+  ).values());
+  const tripParticipants = normalizePeople(activeTrip?.participants || []);
+  const tripSpenderTotals = tripExpenses.reduce((totals, expense) => {
+    const consumers = normalizePeople(expense.involved);
+    if (consumers.length === 0) return totals;
+    const itemSubtotal = Number(expense.originalPrice ?? expense.amount) || 0;
+    const sharePerPerson = itemSubtotal / consumers.length;
+    consumers.forEach(person => {
+      totals[person] = (totals[person] || 0) + sharePerPerson;
+    });
+    return totals;
+  }, Object.fromEntries(tripParticipants.map(person => [person, 0])));
+  const rankedSpenders = Object.entries(tripSpenderTotals).sort(([, firstTotal], [, secondTotal]) => firstTotal - secondTotal);
+  const lowestSpender = rankedSpenders[0] || ['No payments yet', 0];
+  const biggestSpender = rankedSpenders[rankedSpenders.length - 1] || ['No payments yet', 0];
+  const tripReceiptTotals = tripExpenses.reduce((totals, expense) => {
+    const location = String(expense.location || '').trim() || 'Untitled receipt';
+    totals[location] = (totals[location] || 0) + (Number(expense.amount) || 0);
+    return totals;
+  }, {});
+  const rankedReceipts = Object.entries(tripReceiptTotals).sort(([, firstTotal], [, secondTotal]) => firstTotal - secondTotal);
+  const lowestReceipt = rankedReceipts[0] || ['No receipts yet', 0];
+  const biggestReceipt = rankedReceipts[rankedReceipts.length - 1] || ['No receipts yet', 0];
+  const receiptsCoveredByPerson = tripExpenses.reduce((coverage, expense) => {
+    const payer = normalizePerson(expense.payer);
+    const location = String(expense.location || '').trim();
+    if (!payer || !location) return coverage;
+    if (!coverage[payer]) coverage[payer] = new Set();
+    coverage[payer].add(location);
+    return coverage;
+  }, {});
+  const topReceiptCoverer = Object.entries(receiptsCoveredByPerson)
+    .map(([person, locations]) => [person, locations.size])
+    .sort(([, firstCount], [, secondCount]) => firstCount - secondCount)
+    .at(-1) || ['No one yet', 0];
 
   const toggleConsumer = (name) => {
-    if (selectedConsumers.includes(name)) {
-      setSelectedConsumers(selectedConsumers.filter(n => n !== name));
+    const key = personKey(name);
+    if (selectedConsumers.some(person => personKey(person) === key)) {
+      setSelectedConsumers(selectedConsumers.filter(person => personKey(person) !== key));
     } else {
-      setSelectedConsumers([...selectedConsumers, name]);
+      setSelectedConsumers([...selectedConsumers, normalizePerson(name)]);
     }
   }
 
@@ -208,10 +354,25 @@ function App() {
         setTrips(tripList);
       }, (error) => {
         console.error("Snapshot Listener failed:", error);
+        showNotice('Your trips could not be refreshed. Check your connection and try again.', 'error');
       });
       return () => unsub();
     }
   }, [user]);
+
+  useEffect(() => {
+    if (!activeTripId || activeTrip?.expenseStorageVersion !== 2) {
+      setSubcollectionExpenses([]);
+      return undefined;
+    }
+
+    return onSnapshot(collection(db, 'shared_trips', activeTripId, 'expenses'), (snapshot) => {
+      setSubcollectionExpenses(snapshot.docs.map(expenseDoc => ({ id: expenseDoc.id, ...expenseDoc.data() })));
+    }, (error) => {
+      console.error('Expense listener failed:', error);
+      showNotice('Receipt items could not be refreshed. Please try again.', 'error');
+    });
+  }, [activeTripId, activeTrip?.expenseStorageVersion]);
 
   useEffect(() => {
     setTripEmojiMap((currentMap) => {
@@ -240,13 +401,15 @@ function App() {
   }, [trips, user]);
 
   const updateTripInCloud = async (tripId, updatedData) => {
-    if (!user) return;
+    if (!user) return false;
     try {
       const tripRef = doc(db, "shared_trips", tripId);
       await updateDoc(tripRef, { ...updatedData, lastUpdated: new Date() });
+      return true;
     } catch (e) {
       console.error("Error updating trip:", e);
-      alert("Permission denied. Check your rules for shared_trips.");
+      showNotice('We could not save that change. Please check your connection and try again.', 'error');
+      return false;
     }
   };
 
@@ -258,7 +421,7 @@ function App() {
       await signInWithPopup(auth, googleProvider)
     } catch (error) {
       console.error(error)
-      alert("Login failed")
+      showNotice('Google sign-in did not finish. Please try again.', 'error')
     }
   }
 
@@ -280,6 +443,7 @@ function App() {
     setActiveTripId(id)
     setView('trip_view')
     setResults([])
+    setHasCalculated(false)
   }
 
   const openLocationTab = (location) => {
@@ -300,8 +464,6 @@ function App() {
     setEditingTripExpenseId(null)
     setEditingLocationBatch(null)
     setSelectedConsumers([])
-    setSessionPeople([])
-    setNewPersonName('')
     setView('receipt_editor')
   }
 
@@ -309,10 +471,10 @@ function App() {
   // BATCH EDIT, PHOTO RESIZE, PDF
   // ==========================================
   const loadReceiptBatch = (location) => {
-    const batchExpenses = activeTrip.expenses.filter(e => e.location === location);
+    const batchExpenses = tripExpenses.filter(e => e.location === location);
     if (batchExpenses.length === 0) return;
 
-    const commonPayer = batchExpenses[0].payer;
+    const commonPayer = normalizePerson(batchExpenses[0].payer);
     const totalTax = batchExpenses.reduce((sum, e) => sum + e.taxShare, 0);
     const totalTip = batchExpenses.reduce((sum, e) => sum + e.tipShare, 0);
 
@@ -321,7 +483,7 @@ function App() {
       qty: e.rawQty || 1,
       unitPrice: e.rawUnitPrice || (e.originalPrice / (e.rawQty || 1)),
       totalPrice: e.originalPrice,
-      consumers: e.involved
+      consumers: normalizePeople(e.involved)
     }));
 
     setReceiptLoc(location);
@@ -337,9 +499,10 @@ function App() {
     setView('receipt_editor');
   };
 
-  const resizeImage = (file, maxWidth = 800) => {
-    return new Promise((resolve) => {
+  const prepareReceiptImage = (file, maxWidth = 800) => {
+    return new Promise((resolve, reject) => {
       const reader = new FileReader();
+      reader.onerror = () => reject(new Error('The image could not be read.'));
       reader.readAsDataURL(file);
       reader.onload = (event) => {
         const img = new Image();
@@ -358,65 +521,131 @@ function App() {
           canvas.height = height;
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img, 0, 0, width, height);
-
-          resolve(canvas.toDataURL('image/jpeg', 0.7));
+          canvas.toBlob((blob) => {
+            if (blob) {
+              const compressedReader = new FileReader();
+              compressedReader.onerror = () => reject(new Error('The image could not be prepared.'));
+              compressedReader.onload = () => resolve(compressedReader.result);
+              compressedReader.readAsDataURL(blob);
+            }
+            else reject(new Error('The image could not be prepared.'));
+          }, 'image/jpeg', 0.7);
         };
+        img.onerror = () => reject(new Error('The image could not be decoded.'));
       };
     });
   };
 
   const handleReceiptImageUpload = async (e, location) => {
-    const file = e.target.files[0];
+    const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
-    if (file.size > 10000000) return alert("File is way too huge! Please pick something smaller.");
+    if (!activeTrip || receiptImageUploads[location]) return;
+    if (!file.type.startsWith('image/')) return showNotice('Choose an image file for this receipt.', 'error');
+    if (file.size > 10000000) return showNotice('Choose an image smaller than 10 MB.', 'error');
+
+    setReceiptImageUploads(current => ({ ...current, [location]: true }));
     try {
-      const resizedBase64 = await resizeImage(file);
-      const updatedImages = { ...(activeTrip.receiptImages || {}), [location]: resizedBase64 };
-      await updateTripInCloud(activeTripId, { receiptImages: updatedImages });
+      const imageDataUrl = await prepareReceiptImage(file);
+      ensureInlineImageFits(activeTrip, activeTrip.receiptImages?.[location], imageDataUrl);
+      const updatedPaths = { ...(activeTrip.receiptImagePaths || {}) };
+      delete updatedPaths[location];
+      const saved = await updateTripInCloud(activeTripId, {
+        receiptImages: { ...(activeTrip.receiptImages || {}), [location]: imageDataUrl },
+        receiptImagePaths: updatedPaths
+      });
+      if (saved) showNotice('Receipt photo uploaded.', 'success');
     } catch (err) {
       console.error("Image upload error:", err);
-      alert("Could not process image.");
+      showNotice('We could not save that photo. Choose a smaller image or remove another saved photo from this trip.', 'error');
+    } finally {
+      setReceiptImageUploads(current => ({ ...current, [location]: false }));
     }
   };
 
   const removeReceiptImage = async (location) => {
-    if (!activeTrip || !window.confirm('Remove this receipt photo? This cannot be undone.')) return;
-    const updatedImages = { ...(activeTrip.receiptImages || {}) };
-    delete updatedImages[location];
-    try {
-      await updateDoc(doc(db, 'shared_trips', activeTripId), {
-        receiptImages: updatedImages,
-        lastUpdated: new Date()
-      });
-    } catch (err) {
-      console.error('Receipt photo removal failed:', err);
-      alert('Could not remove the receipt photo. Please try again.');
+    if (!activeTrip) return;
+    setConfirmation({
+      title: 'Remove receipt photo?',
+      message: 'The photo will be removed from this receipt. This cannot be undone.',
+      confirmLabel: 'Remove photo',
+      onConfirm: async () => {
+        const updatedImages = { ...(activeTrip.receiptImages || {}) };
+        const updatedPaths = { ...(activeTrip.receiptImagePaths || {}) };
+        delete updatedImages[location];
+        delete updatedPaths[location];
+        try {
+          await updateDoc(doc(db, 'shared_trips', activeTripId), {
+            receiptImages: updatedImages,
+            receiptImagePaths: updatedPaths,
+            lastUpdated: new Date()
+          });
+          showNotice('Receipt photo removed.', 'success');
+        } catch (err) {
+          console.error('Receipt photo removal failed:', err);
+          showNotice('We could not remove that photo. Please try again.', 'error');
+        }
+      }
+    });
+  };
+
+  const updateReceiptColor = async (location, color) => {
+    if (!activeTrip) return;
+    const updatedColors = { ...(activeTrip.receiptColors || {}) };
+    if (color === receiptColorOptions[0].value) {
+      delete updatedColors[location];
+    } else {
+      updatedColors[location] = color;
     }
+    await updateTripInCloud(activeTripId, { receiptColors: updatedColors });
   };
 
   const handleTripCoverUpload = async (event, trip) => {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    if (!file.type.startsWith('image/')) return alert('Please choose an image file.');
-    if (file.size > 10 * 1024 * 1024) return alert('Please choose an image smaller than 10 MB.');
+    if (!file.type.startsWith('image/')) return showNotice('Choose an image file to use as a cover.', 'error');
+    if (file.size > 10 * 1024 * 1024) return showNotice('Choose an image smaller than 10 MB.', 'error');
 
     setTripCoverUploads(current => ({ ...current, [trip.id]: true }));
     try {
-      const path = `shared_trips/${trip.id}/trip-covers/${Date.now()}`;
-      const fileRef = ref(storage, path);
-      await uploadBytes(fileRef, file, { contentType: file.type });
-      const coverUrl = await getDownloadURL(fileRef);
+      const coverDataUrl = await prepareReceiptImage(file);
+      ensureInlineImageFits(trip, trip.tripCover, coverDataUrl);
       await updateDoc(doc(db, 'shared_trips', trip.id), {
-        tripCover: coverUrl,
+        tripCover: coverDataUrl,
+        tripCoverPath: '',
         lastUpdated: new Date()
       });
+      showNotice('Trip cover updated.', 'success');
     } catch (err) {
       console.error('Trip cover upload failed:', err);
-      alert('Could not upload the trip cover. Make sure Firebase Storage is enabled and its rules are published.');
+      showNotice('We could not save that cover. Choose a smaller image or remove another saved photo from this trip.', 'error');
     } finally {
       setTripCoverUploads(current => ({ ...current, [trip.id]: false }));
     }
+  };
+
+  const removeTripCover = (event, trip) => {
+    event.stopPropagation();
+    setConfirmation({
+      title: 'Remove trip cover?',
+      message: 'The trip will return to its standard card appearance.',
+      confirmLabel: 'Remove cover',
+      onConfirm: async () => {
+        try {
+          await updateDoc(doc(db, 'shared_trips', trip.id), {
+            tripCover: '',
+            tripCoverPath: '',
+            background: null,
+            lastUpdated: new Date()
+          });
+          showNotice('Trip cover removed.', 'success');
+        } catch (error) {
+          console.error('Trip cover removal failed:', error);
+          showNotice('We could not remove that trip cover. Please try again.', 'error');
+        }
+      }
+    });
   };
 
   const closeCoverEditor = () => {
@@ -428,8 +657,8 @@ function App() {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
-    if (!file.type.startsWith('image/')) return alert('Please choose an image file.');
-    if (file.size > 10 * 1024 * 1024) return alert('Please choose an image smaller than 10 MB.');
+    if (!file.type.startsWith('image/')) return showNotice('Choose an image file to use as a cover.', 'error');
+    if (file.size > 10 * 1024 * 1024) return showNotice('Choose an image smaller than 10 MB.', 'error');
 
     const savedCrop = activeTrip?.receiptCoverSettings?.[location];
     setCoverCrop({
@@ -446,36 +675,104 @@ function App() {
 
     setCoverUploads(current => ({ ...current, [location]: true }));
     try {
-      const path = `shared_trips/${activeTripId}/receipt-covers/${encodeURIComponent(location)}/${Date.now()}`;
-      const fileRef = ref(storage, path);
-      await uploadBytes(fileRef, file, { contentType: file.type });
-      const coverUrl = await getDownloadURL(fileRef);
+      const coverDataUrl = await prepareReceiptImage(file);
+      ensureInlineImageFits(activeTrip, activeTrip.receiptCovers?.[location], coverDataUrl);
+      const updatedPaths = { ...(activeTrip.receiptCoverPaths || {}) };
+      delete updatedPaths[location];
       await updateDoc(doc(db, 'shared_trips', activeTripId), {
-        receiptCovers: { ...(activeTrip.receiptCovers || {}), [location]: coverUrl },
+        receiptCovers: { ...(activeTrip.receiptCovers || {}), [location]: coverDataUrl },
+        receiptCoverPaths: updatedPaths,
         receiptCoverSettings: { ...(activeTrip.receiptCoverSettings || {}), [location]: coverCrop },
         lastUpdated: new Date()
       });
       closeCoverEditor();
+      showNotice('Receipt cover updated.', 'success');
     } catch (err) {
       console.error('Receipt cover upload failed:', err);
-      alert('Could not upload the receipt cover. Make sure Firebase Storage is enabled and its rules are published.');
+      showNotice('We could not save that cover. Choose a smaller image or remove another saved photo from this trip.', 'error');
     } finally {
       setCoverUploads(current => ({ ...current, [location]: false }));
     }
   };
 
+  const removeReceiptCover = (location) => {
+    if (!activeTrip?.receiptCovers?.[location]) return;
+    setConfirmation({
+      title: 'Remove receipt cover?',
+      message: 'This removes the chosen card cover. The original receipt photo, if present, will be used instead.',
+      confirmLabel: 'Remove cover',
+      onConfirm: async () => {
+        const updatedCovers = { ...(activeTrip.receiptCovers || {}) };
+        const updatedPaths = { ...(activeTrip.receiptCoverPaths || {}) };
+        const updatedSettings = { ...(activeTrip.receiptCoverSettings || {}) };
+        delete updatedCovers[location];
+        delete updatedPaths[location];
+        delete updatedSettings[location];
+        try {
+          await updateDoc(doc(db, 'shared_trips', activeTripId), {
+            receiptCovers: updatedCovers,
+            receiptCoverPaths: updatedPaths,
+            receiptCoverSettings: updatedSettings,
+            lastUpdated: new Date()
+          });
+          showNotice('Receipt cover removed.', 'success');
+        } catch (error) {
+          console.error('Receipt cover removal failed:', error);
+          showNotice('We could not remove that receipt cover. Please try again.', 'error');
+        }
+      }
+    });
+  };
+
   const printReceipt = () => window.print();
 
   // DATA ACTIONS
+  const upgradeTripExpenses = async () => {
+    if (!activeTrip || activeTrip.expenseStorageVersion === 2 || !isTripManager(activeTrip) || isUpgradingExpenses) return;
+    const legacyExpenses = activeTrip.expenses || [];
+    if (legacyExpenses.length > 450) {
+      showNotice('This trip has too many items for a one-step upgrade. Please contact the app owner for a guided migration.', 'error');
+      return;
+    }
+
+    setIsUpgradingExpenses(true);
+    try {
+      const batch = writeBatch(db);
+      legacyExpenses.forEach((expense) => {
+        const expenseId = String(expense.id || createExpenseId());
+        batch.set(doc(db, 'shared_trips', activeTripId, 'expenses', expenseId), { ...expense, id: expenseId });
+      });
+      batch.update(doc(db, 'shared_trips', activeTripId), {
+        expenses: [],
+        expenseStorageVersion: 2,
+        expenseCount: legacyExpenses.length,
+        receiptCount: new Set(legacyExpenses.map(expense => expense.location).filter(Boolean)).size,
+        totalSpent: legacyExpenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0),
+        lastUpdated: new Date()
+      });
+      await batch.commit();
+      showNotice('This trip is ready for safer shared editing.', 'success');
+    } catch (error) {
+      console.error('Trip expense upgrade failed:', error);
+      showNotice('We could not upgrade this trip. Your existing receipts are unchanged.', 'error');
+    } finally {
+      setIsUpgradingExpenses(false);
+    }
+  };
+
   const createFolder = async () => {
     if (!newFolderName.trim()) return;
 
-    const generatedCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const generatedCode = createInviteCode();
     const now = new Date();
 
     const newTrip = {
       name: newFolderName,
       expenses: [],
+      expenseStorageVersion: 2,
+      expenseCount: 0,
+      receiptCount: 0,
+      totalSpent: 0,
       joinCode: generatedCode,
       ownerId: user.uid,
       admins: [user.uid],
@@ -489,9 +786,10 @@ function App() {
     try {
       await setDoc(doc(db, "shared_trips", generatedCode), newTrip);
       setNewFolderName('');
+      showNotice(`“${newTrip.name}” is ready to share.`, 'success');
     } catch (e) {
       console.error("Error creating shared trip: ", e);
-      alert("Check your console (F12) for the specific Firebase error.");
+      showNotice('We could not create that trip. Please try again.', 'error');
     }
   };
 
@@ -504,57 +802,131 @@ function App() {
         members: arrayUnion(user.uid)
       });
       setJoinCodeInput('');
-      alert("Successfully joined the trip!");
+      showNotice('You joined the trip.', 'success');
     } catch (e) {
       console.error("Join Error:", e);
-      alert("Could not join that trip. Check the code and try again.");
+      showNotice('We could not find that trip. Check the invite code and try again.', 'error');
     }
+  };
+
+  const leaveTrip = () => {
+    if (!activeTrip || isTripManager(activeTrip)) return;
+    setConfirmation({
+      title: `Leave “${activeTrip.name}”?`,
+      message: 'You will lose access to this trip and can only return with its invite code.',
+      confirmLabel: 'Leave trip',
+      onConfirm: async () => {
+        try {
+          await updateDoc(doc(db, 'shared_trips', activeTripId), {
+            members: arrayRemove(user.uid)
+          });
+          goHome();
+          showNotice('You left the trip.', 'success');
+        } catch (error) {
+          console.error('Could not leave trip:', error);
+          showNotice('We could not leave this trip. Please try again.', 'error');
+        }
+      }
+    });
   };
 
   const deleteFolder = async (e, id) => {
     e.stopPropagation();
     const tripToDelete = trips.find(trip => trip.id === id);
-    if (!isTripManager(tripToDelete)) return alert("Only the trip owner or an admin can delete this trip.");
+    if (!isTripManager(tripToDelete)) return showNotice('Only the trip owner or an admin can delete this trip.', 'error');
 
-    if (confirm("Delete this entire trip folder for everyone?")) {
-      try {
-        const tripDocRef = doc(db, "shared_trips", id);
-        await deleteDoc(tripDocRef);
-      } catch (err) {
-        console.error("Error deleting trip: ", err);
+    setConfirmation({
+      title: `Delete “${tripToDelete?.name || 'this trip'}”?`,
+      message: 'This removes the trip and its shared data for everyone who has access.',
+      confirmLabel: 'Delete trip',
+      onConfirm: async () => {
+        try {
+          await deleteDoc(doc(db, "shared_trips", id));
+          showNotice('Trip deleted.', 'success');
+        } catch (err) {
+          console.error("Error deleting trip: ", err);
+          showNotice('We could not delete that trip. Please try again.', 'error');
+        }
       }
-    }
+    });
   };
 
   const clearAllTrips = async () => {
     if (!user || manageableTrips.length === 0 || isClearingTrips) return;
     const tripCount = manageableTrips.length;
-    const confirmMessage = `This will permanently delete ${tripCount} trip${tripCount === 1 ? '' : 's'} you own or administer for everyone who has access. Continue?`;
-    if (!window.confirm(confirmMessage)) return;
-
     const confirmationPhrase = `CLEAR ${tripCount}`;
-    if (window.prompt(`Final confirmation: type "${confirmationPhrase}" to delete all trips.`) !== confirmationPhrase) return;
-
-    setIsClearingTrips(true);
-    try {
-      const batchSize = 450;
-      for (let i = 0; i < manageableTrips.length; i += batchSize) {
-        const batch = writeBatch(db);
-        manageableTrips.slice(i, i + batchSize).forEach((trip) => {
-          batch.delete(doc(db, "shared_trips", trip.id));
-        });
-        await batch.commit();
+    const confirmationState = { value: '' };
+    setConfirmation({
+      title: `Delete ${tripCount} trip${tripCount === 1 ? '' : 's'}?`,
+      message: 'This permanently removes every trip you own or administer for everyone who has access.',
+      confirmationPhrase,
+      ...confirmationState,
+      setValue: value => setConfirmation(current => ({ ...current, value })),
+      confirmLabel: 'Delete all trips',
+      onConfirm: async () => {
+        setIsClearingTrips(true);
+        try {
+          const batchSize = 450;
+          for (let i = 0; i < manageableTrips.length; i += batchSize) {
+            const batch = writeBatch(db);
+            manageableTrips.slice(i, i + batchSize).forEach((trip) => {
+              batch.delete(doc(db, "shared_trips", trip.id));
+            });
+            await batch.commit();
+          }
+          showNotice('Your managed trips were deleted.', 'success');
+        } catch (err) {
+          console.error("Error clearing trips: ", err);
+          showNotice('We could not clear every trip. Please refresh and try again.', 'error');
+        } finally {
+          setIsClearingTrips(false);
+        }
       }
-    } catch (err) {
-      console.error("Error clearing trips: ", err);
-    } finally {
-      setIsClearingTrips(false);
-    }
+    });
   };
 
-  const deleteExpense = async (expenseId) => {
-    const updatedExpenses = activeTrip.expenses.filter(e => e.id !== expenseId);
-    await updateTripInCloud(activeTripId, { expenses: updatedExpenses });
+  const deleteExpense = (expenseId) => {
+    const expense = tripExpenses.find(item => item.id === expenseId);
+    if (!expense) return;
+    setConfirmation({
+      title: 'Remove this item?',
+      message: `“${expense.item}” will be removed from ${expense.location}.`,
+      confirmLabel: 'Remove item',
+      onConfirm: async () => {
+        try {
+          if (activeTrip.expenseStorageVersion === 2) {
+            const batch = writeBatch(db);
+            batch.delete(doc(db, 'shared_trips', activeTripId, 'expenses', String(expenseId)));
+            const remainingExpenses = tripExpenses.filter(item => item.id !== expenseId);
+            batch.update(doc(db, 'shared_trips', activeTripId), {
+              expenseCount: increment(-1),
+              receiptCount: new Set(remainingExpenses.map(item => item.location).filter(Boolean)).size,
+              totalSpent: remainingExpenses.reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
+              lastUpdated: new Date()
+            });
+            await batch.commit();
+            setResults([]);
+            setHasCalculated(false);
+            showNotice('Receipt item removed.', 'success');
+            return;
+          }
+          const updatedExpenses = tripExpenses.filter(item => item.id !== expenseId);
+          const saved = await updateTripInCloud(activeTripId, {
+            expenses: updatedExpenses,
+            receiptCount: new Set(updatedExpenses.map(item => item.location).filter(Boolean)).size,
+            totalSpent: updatedExpenses.reduce((sum, item) => sum + (Number(item.amount) || 0), 0)
+          });
+          if (saved) {
+            setResults([]);
+            setHasCalculated(false);
+            showNotice('Receipt item removed.', 'success');
+          }
+        } catch (error) {
+          console.error('Expense removal failed:', error);
+          showNotice('We could not remove that item. Please try again.', 'error');
+        }
+      }
+    });
   };
 
   const addTripParticipant = async (event) => {
@@ -565,17 +937,22 @@ function App() {
     ).join(' ');
     if ((activeTrip.participants || []).some(person => person.toLowerCase() === name.toLowerCase())) {
       setNewParticipantName('');
+      setIsAddingParticipant(false);
       return;
     }
     await updateTripInCloud(activeTripId, { participants: [...(activeTrip.participants || []), name] });
     setNewParticipantName('');
+    setIsAddingParticipant(false);
   };
 
   const removeTripParticipant = async (name) => {
     if (!activeTrip) return;
-    const isUsed = activeTrip.expenses.some(expense => expense.payer === name || expense.involved.includes(name));
-    if (isUsed) return alert(`${name} is used on a receipt and cannot be removed.`);
-    await updateTripInCloud(activeTripId, { participants: (activeTrip.participants || []).filter(person => person !== name) });
+    const targetKey = personKey(name);
+    const isUsed = tripExpenses.some(expense => personKey(expense.payer) === targetKey || expense.involved.some(person => personKey(person) === targetKey));
+    if (isUsed) return showNotice(`${name} is included on a receipt and cannot be removed.`, 'error');
+    await updateTripInCloud(activeTripId, { participants: (activeTrip.participants || []).filter(person => personKey(person) !== targetKey) });
+    setParticipantToRemove('');
+    setIsRemovingParticipant(false);
   };
 
   const handleSaveTripName = async () => {
@@ -585,28 +962,27 @@ function App() {
   };
 
   // --- SETTLEMENT MARKER ---
-  const toggleSettlement = async (line) => {
+  const toggleSettlement = async (settlement) => {
     if (!activeTrip || !activeTripId) return;
 
-    // Calculate the new state locally immediately
     const currentSettled = activeTrip.settledDebts || [];
-    const isSettled = currentSettled.includes(line);
-
-    const updatedSettledDebts = isSettled
-      ? currentSettled.filter(d => d !== line)
-      : [...currentSettled, line];
-
-    activeTrip.settledDebts = updatedSettledDebts;
+    const settledKey = currentSettled.includes(settlement.id)
+      ? settlement.id
+      : currentSettled.includes(settlement.legacyLine)
+        ? settlement.legacyLine
+        : null;
+    const isSettled = Boolean(settledKey);
 
     const tripRef = doc(db, "shared_trips", activeTripId);
 
     try {
       await updateDoc(tripRef, {
-        settledDebts: isSettled ? arrayRemove(line) : arrayUnion(line)
+        settledDebts: isSettled ? arrayRemove(settledKey) : arrayUnion(settlement.id)
       });
+      showNotice(isSettled ? 'Marked as unpaid.' : 'Marked as paid.', 'success');
     } catch (e) {
       console.error("Error updating settlement status:", e);
-      alert("Could not update settlement. Check internet connection.");
+      showNotice('We could not update that settlement. Please try again.', 'error');
     }
   };
 
@@ -614,7 +990,7 @@ function App() {
   const editSavedExpense = (expense) => {
     setEditingTripExpenseId(expense.id)
     setReceiptLoc(expense.location)
-    setReceiptPayer(expense.payer)
+    setReceiptPayer(normalizePerson(expense.payer))
 
     const name = expense.rawName || expense.item.replace(/^\d+x\s/, '')
     const qty = expense.rawQty || 1
@@ -625,7 +1001,7 @@ function App() {
       qty: qty,
       unitPrice: price,
       totalPrice: expense.originalPrice,
-      consumers: expense.involved
+      consumers: normalizePeople(expense.involved)
     }
     setCurrentItems([reconstructedItem])
 
@@ -639,7 +1015,7 @@ function App() {
 
   // --- CALCULATION ---
   const calculateTripSettlement = async () => {
-    if (!activeTrip || activeTrip.expenses.length === 0) return;
+    if (!activeTrip || tripExpenses.length === 0) return;
     setIsLoading(true);
 
     try {
@@ -652,7 +1028,11 @@ function App() {
       const response = await fetch('/api/calculate', {
         method: 'POST',
         headers,
-        body: JSON.stringify(activeTrip.expenses),
+        body: JSON.stringify(tripExpenses.map(expense => ({
+          ...expense,
+          payer: normalizePerson(expense.payer),
+          involved: normalizePeople(expense.involved)
+        }))),
       });
 
       if (!response.ok) {
@@ -662,9 +1042,10 @@ function App() {
 
       const settlementPlan = await response.json();
       setResults(Array.isArray(settlementPlan) ? settlementPlan : settlementPlan.data || []);
+      setHasCalculated(true);
     } catch (error) {
       console.error("Error fetching settlement:", error);
-      alert(error.message || "Failed to connect to backend.");
+      showNotice(error.message || 'We could not calculate settlements. Please try again.', 'error');
     } finally {
       setIsLoading(false);
     }
@@ -672,9 +1053,12 @@ function App() {
 
   // --- BUILDER ACTIONS ---
   const handleAddOrUpdateItem = () => {
-    if (!itemName || !unitPrice || selectedConsumers.length === 0) return alert("Fill item details and select at least one consumer")
-    const qty = parseFloat(quantity) || 1
-    const price = parseFloat(unitPrice)
+    const price = Number(unitPrice)
+    const itemQuantity = Number(quantity)
+    if (!itemName.trim() || !Number.isFinite(price) || price <= 0 || !Number.isFinite(itemQuantity) || itemQuantity <= 0 || selectedConsumers.length === 0) {
+      return showNotice('Enter an item, a positive price and quantity, then select who shared it.', 'error')
+    }
+    const qty = itemQuantity
     const totalLineCost = price * qty
     const newItem = {
       name: itemName,
@@ -707,8 +1091,8 @@ function App() {
   }
 
   const saveReceiptToTrip = async () => {
-    if (!receiptLoc || !receiptPayer) return alert("Enter Location and Payer");
-    if (currentItems.length === 0) return alert("Add items");
+    if (!receiptLoc.trim() || !receiptPayer.trim()) return showNotice('Add a receipt name and choose who paid.', 'error');
+    if (currentItems.length === 0) return showNotice('Add at least one item before saving this receipt.', 'error');
 
     const subtotal = currentItems.reduce((sum, item) => sum + item.totalPrice, 0);
     let taxTotal = parseFloat(receiptTax) || 0;
@@ -724,12 +1108,12 @@ function App() {
       const itemTax = item.totalPrice * taxRate;
       const itemTip = item.totalPrice * tipRate;
       return {
-        id: (Date.now() + Math.random()),
+        id: createExpenseId(),
         item: `${item.qty}x ${item.name}`,
         location: receiptLoc,
-        payer: receiptPayer,
+        payer: normalizePerson(receiptPayer),
         amount: item.totalPrice + itemTax + itemTip,
-        involved: item.consumers,
+        involved: normalizePeople(item.consumers),
         rawName: item.name,
         rawQty: item.qty,
         rawUnitPrice: item.unitPrice,
@@ -742,7 +1126,7 @@ function App() {
 
     try {
       const tripRef = doc(db, "shared_trips", activeTripId);
-      let finalExpensesList = activeTrip.expenses;
+      let finalExpensesList = tripExpenses;
 
       if (editingLocationBatch) {
         finalExpensesList = finalExpensesList.filter(e => e.location !== editingLocationBatch);
@@ -750,24 +1134,55 @@ function App() {
         finalExpensesList = finalExpensesList.filter(e => e.id !== editingTripExpenseId);
       }
 
-      await updateDoc(tripRef, {
-        expenses: [...finalExpensesList, ...newExpenses],
-        lastUpdated: new Date()
-      });
+      if (activeTrip.expenseStorageVersion === 2) {
+        const batch = writeBatch(db);
+        const replacedExpenses = editingLocationBatch
+          ? tripExpenses.filter(expense => expense.location === editingLocationBatch)
+          : editingTripExpenseId
+            ? tripExpenses.filter(expense => expense.id === editingTripExpenseId)
+            : [];
+
+        replacedExpenses.forEach((expense) => {
+          batch.delete(doc(db, 'shared_trips', activeTripId, 'expenses', String(expense.id)));
+        });
+        newExpenses.forEach((expense) => {
+          batch.set(doc(db, 'shared_trips', activeTripId, 'expenses', expense.id), expense);
+        });
+        batch.update(tripRef, {
+          expenseCount: increment(newExpenses.length - replacedExpenses.length),
+          receiptCount: new Set([...finalExpensesList, ...newExpenses].map(expense => expense.location).filter(Boolean)).size,
+          totalSpent: [...finalExpensesList, ...newExpenses].reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0),
+          lastUpdated: new Date()
+        });
+        await batch.commit();
+      } else {
+        await updateDoc(tripRef, {
+          expenses: [...finalExpensesList, ...newExpenses],
+          receiptCount: new Set([...finalExpensesList, ...newExpenses].map(expense => expense.location).filter(Boolean)).size,
+          totalSpent: [...finalExpensesList, ...newExpenses].reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0),
+          lastUpdated: new Date()
+        });
+      }
 
       setActiveLocation(receiptLoc);
       setView('receipt_detail');
+      setResults([]);
+      setHasCalculated(false);
       setEditingTripExpenseId(null);
       setEditingLocationBatch(null);
+      showNotice(editingTripExpenseId || editingLocationBatch ? 'Receipt changes saved.' : 'Receipt saved.', 'success');
     } catch (err) {
       console.error("Save failed:", err);
+      showNotice('We could not save that receipt. Please try again.', 'error');
     }
   };
 
   const getBreakdown = (expensesList) => {
     const breakdown = {}
     expensesList.forEach(exp => {
-      const numPeople = exp.involved.length
+      const involvedPeople = normalizePeople(exp.involved)
+      const numPeople = involvedPeople.length
+      if (numPeople === 0) return
       const splitPrice = exp.originalPrice / numPeople
       const splitTax = exp.taxShare / numPeople
       const splitTip = exp.tipShare / numPeople
@@ -787,7 +1202,7 @@ function App() {
         displayName = `(Split) ${strippedName}`;
       }
 
-      exp.involved.forEach(person => {
+      involvedPeople.forEach(person => {
         if (!breakdown[person]) {
           breakdown[person] = { items: [], subtotal: 0, tax: 0, tip: 0, grandTotal: 0 }
         }
@@ -811,8 +1226,10 @@ function App() {
 
   if (view === 'login' || !user) {
     return (
-      <div className="hero-wrapper">
-        <div className="hero-content">
+      <>
+        <NoticeRegion notice={notice} onDismiss={() => setNotice(null)} />
+        <div className="hero-wrapper">
+          <div className="hero-content">
           <div className="hero-text-side">
             <div className="badge-pill">✨ The easiest way to split bills</div>
             <h1 className="hero-title-large">
@@ -834,15 +1251,16 @@ function App() {
             <div className="mockup-phone">
               <div className="mockup-header"><div className="mockup-notch"></div><div className="mockup-title">NYC Trip 🗽</div></div>
               <div className="mockup-body">
-                <div className="mockup-row fade-1"><div className="icon-circle">🍕</div><div className="row-text"><div className="row-title">Joe's Pizza</div><div className="row-sub">Paid by Ashton</div></div><div className="row-price text-red">-$15.00</div></div>
-                <div className="mockup-row fade-2"><div className="icon-circle">🚕</div><div className="row-text"><div className="row-title">Uber to Hotel</div><div className="row-sub">Paid by Therese</div></div><div className="row-price text-green">+$8.50</div></div>
-                <div className="mockup-row fade-3"><div className="icon-circle">🍸</div><div className="row-text"><div className="row-title">Rooftop Drinks</div><div className="row-sub">Paid by ElJohn</div></div><div className="row-price text-red">-$22.00</div></div>
-                <div className="mockup-floating-card float-anim"><span>💸 You owe Wes</span><strong>$22.00</strong></div>
+                <div className="mockup-row"><div className="icon-circle">🍕</div><div className="row-text"><div className="row-title">Joe's Pizza</div><div className="row-sub">Paid by Ashton</div></div><div className="row-price text-red">-$15.00</div></div>
+                <div className="mockup-row"><div className="icon-circle">🚕</div><div className="row-text"><div className="row-title">Uber to Hotel</div><div className="row-sub">Paid by Therese</div></div><div className="row-price text-green">+$8.50</div></div>
+                <div className="mockup-row"><div className="icon-circle">🍸</div><div className="row-text"><div className="row-title">Rooftop Drinks</div><div className="row-sub">Paid by ElJohn</div></div><div className="row-price text-red">-$22.00</div></div>
+                <div className="mockup-floating-card"><span>💸 You owe Wes</span><strong>$22.00</strong></div>
               </div>
             </div>
           </div>
+          </div>
         </div>
-      </div>
+      </>
     )
   }
 
@@ -850,7 +1268,8 @@ function App() {
     <div className="app-container">
 
       {/* HEADER */}
-      <div className="no-print" style={{ marginBottom: '20px', borderBottom: '1px solid var(--glass-border)', paddingBottom: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <NoticeRegion notice={notice} onDismiss={() => setNotice(null)} />
+      <div className="app-header no-print">
         <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
           <h2 className="header-title" style={{ margin: 0, fontSize: '1.8rem', cursor: 'pointer' }} onClick={goHome}>GroupTab 📁</h2>
           <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.1)', padding: '4px 10px', borderRadius: '20px' }}>
@@ -875,7 +1294,7 @@ function App() {
           </div>
 
           <div className="create-bar-container">
-            <div className="action-panel">
+            <div className="action-panel action-panel-create">
               <div className="action-title"><span className="action-icon">+</span>Create Trip</div>
               <div className="create-bar">
                 <input
@@ -885,22 +1304,22 @@ function App() {
                   onChange={e => setNewFolderName(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && createFolder()}
                 />
-                <button className="btn-icon" onClick={createFolder}>Create</button>
+                <button className="btn-icon create-trip-button" onClick={createFolder}>Create</button>
               </div>
             </div>
 
-            <div className="action-panel">
+            <div className="action-panel action-panel-join">
               <div className="action-title"><span className="action-icon">#</span>Join Trip</div>
               <div className="create-bar">
                 <input
                   className="transparent-input"
-                  placeholder="AB1234"
+                  placeholder="AB12CD34"
                   value={joinCodeInput}
-                  maxLength={6}
+                  maxLength={8}
                   onChange={e => setJoinCodeInput(e.target.value.toUpperCase())}
                   onKeyDown={(e) => e.key === 'Enter' && handleJoinTrip(joinCodeInput)}
                 />
-                <button className="btn-icon" onClick={() => handleJoinTrip(joinCodeInput)}>Join</button>
+                <button className="btn-icon join-trip-button" onClick={() => handleJoinTrip(joinCodeInput)}>Join</button>
               </div>
             </div>
           </div>
@@ -945,6 +1364,9 @@ function App() {
                             <input type="file" accept="image/*" onChange={event => handleTripCoverUpload(event, trip)} />
                             {tripCoverUploads[trip.id] ? 'Uploading…' : uploadedCover ? 'Update cover' : 'Add cover'}
                           </label>
+                          {uploadedCover && (
+                            <button className="cover-remove-button" type="button" onClick={event => removeTripCover(event, trip)}>Remove cover</button>
+                          )}
                           {isTripManager(trip) && (
                             <button className="delete-btn" onClick={(e) => deleteFolder(e, trip.id)} title="Delete trip">✕</button>
                           )}
@@ -953,8 +1375,12 @@ function App() {
                       <div className="folder-info">
                         <div className="folder-name">{trip.name}</div>
                         <div className="folder-meta" style={uploadedCover ? { color: '#f1f5f9' } : {}}>
-                          <span>{trip.expenses.length} expenses</span>
+                          <span>{getReceiptCount(trip)} receipt{getReceiptCount(trip) === 1 ? '' : 's'}</span>
+                          <span className="meta-dot">{trip.expenseStorageVersion === 2 ? (trip.expenseCount || 0) : (trip.expenses?.length || 0)} expenses</span>
                           <span className="meta-dot">{trip.members?.length || 1} members</span>
+                        </div>
+                        <div className="home-trip-total" style={uploadedCover ? { textShadow: '0 1px 3px rgba(0,0,0,.85)' } : {}}>
+                          <span>Total spent</span><strong>${getTripSpent(trip).toFixed(2)}</strong>
                         </div>
                         <div className="folder-date" style={uploadedCover ? { color: '#e2e8f0' } : {}}>
                           Updated {new Date(trip.lastUpdated?.toMillis?.() || trip.lastUpdated).toLocaleDateString()}
@@ -976,49 +1402,119 @@ function App() {
       {view === 'trip_view' && activeTrip && (
         <div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', marginBottom: '20px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              {isEditingTitle ? (
-                <input
-                  className="header-title-input"
-                  value={tempTitle}
-                  onChange={(e) => setTempTitle(e.target.value)}
-                  onBlur={handleSaveTripName}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSaveTripName()}
-                  autoFocus
-                />
-              ) : (
-                <h1 className="header-title" onClick={() => { setIsEditingTitle(true); setTempTitle(activeTrip.name); }}>
-                  {activeTrip.name} <span style={{ fontSize: '1rem', opacity: 0.5, marginLeft: '10px', cursor: 'pointer', verticalAlign: 'middle' }}>✎</span>
-                </h1>
-              )}
-            </div>
+            <div className="trip-overview-heading">
+              <div className="trip-title-group">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  {isEditingTitle ? (
+                    <input
+                      className="header-title-input"
+                      value={tempTitle}
+                      onChange={(e) => setTempTitle(e.target.value)}
+                      onBlur={handleSaveTripName}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSaveTripName()}
+                      autoFocus
+                    />
+                  ) : (
+                    <h1 className="header-title trip-page-title" onClick={() => { setIsEditingTitle(true); setTempTitle(activeTrip.name); }}>
+                      {activeTrip.name} <span style={{ fontSize: '1rem', opacity: 0.5, marginLeft: '10px', cursor: 'pointer', verticalAlign: 'middle' }}>✎</span>
+                    </h1>
+                  )}
+                </div>
+              </div>
 
-            <div style={{
-              background: 'rgba(255, 255, 255, 0.1)', border: '1px solid rgba(255, 255, 255, 0.2)', padding: '6px 12px',
-              borderRadius: '12px', width: 'fit-content', fontSize: '0.85rem', color: 'var(--primary-glow)', display: 'flex', gap: '8px', alignItems: 'center'
-            }}>
-              <span style={{ opacity: 0.7 }}>Invite Code:</span>
-              <strong style={{ letterSpacing: '1px', color: 'white' }}>{activeTrip.joinCode || '------'}</strong>
-              <span style={{ cursor: 'pointer', marginLeft: '5px' }} onClick={() => navigator.clipboard.writeText(activeTrip.joinCode)} title="Copy Code">📋</span>
+              <div className="trip-invite-code">
+              <span>Invite code</span>
+              <strong>{activeTrip.joinCode || '------'}</strong>
+              <button
+                className="copy-code-button"
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(activeTrip.joinCode);
+                    showNotice('Invite code copied.', 'success');
+                  } catch (error) {
+                    console.error('Could not copy invite code:', error);
+                    showNotice('Copy the invite code manually.', 'error');
+                  }
+                }}
+                title="Copy invite code"
+                aria-label="Copy invite code"
+              >📋</button>
+              </div>
             </div>
+            <aside className="trip-spend-summary trip-spend-summary-wide" aria-label="Trip spending summary">
+              <div className="trip-spend-marquee">
+                <div className="trip-spend-track">
+                  {[0, 1].map(copy => (
+                    <div className="trip-spend-stat-set" key={copy} aria-hidden={copy === 1}>
+                      <div className="trip-spend-stat total-spend-stat"><span>Total spent</span><strong>${tripTotal.toFixed(2)}</strong></div>
+                      <div className="trip-spend-stat biggest-spend-stat"><span>Biggest spender</span><strong>{biggestSpender[0]} · ${biggestSpender[1].toFixed(2)}</strong></div>
+                      <div className="trip-spend-stat lowest-spend-stat"><span>Lowest spender</span><strong>{lowestSpender[0]} · ${lowestSpender[1].toFixed(2)}</strong></div>
+                      <div className="trip-spend-stat biggest-receipt-stat"><span>Most expensive receipt</span><strong>{biggestReceipt[0]} · ${biggestReceipt[1].toFixed(2)}</strong></div>
+                      <div className="trip-spend-stat lowest-receipt-stat"><span>Least expensive receipt</span><strong>{lowestReceipt[0]} · ${lowestReceipt[1].toFixed(2)}</strong></div>
+                      <div className="trip-spend-stat receipt-coverer-stat"><span>Most receipts covered</span><strong>Thanks, {topReceiptCoverer[0]} · {topReceiptCoverer[1]} receipt{topReceiptCoverer[1] === 1 ? '' : 's'}</strong></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </aside>
 
             <section className="participants-panel">
-              <div>
-                <h2>Trip participants</h2>
-                <p>Add everyone once; their names will be available on every receipt.</p>
+              <div className="participants-heading">
+                <div>
+                  <h2>Trip participants</h2>
+                  <p>Add everyone once; their names will be available on every receipt.</p>
+                </div>
+                <div className="participant-actions">
+                  {!isAddingParticipant && (
+                    <button className="participant-add-button" type="button" onClick={() => { setIsRemovingParticipant(false); setIsAddingParticipant(true); }}>+ Add participant</button>
+                  )}
+                  {!isRemovingParticipant && tripParticipants.length > 0 && (
+                    <button className="participant-remove-button" type="button" onClick={() => { setIsAddingParticipant(false); setIsRemovingParticipant(true); setParticipantToRemove(tripParticipants[0] || ''); }}>Remove participant</button>
+                  )}
+                </div>
               </div>
               <div className="participant-list">
-                {(activeTrip.participants || []).map(person => (
-                  <span className="participant-chip" key={person}>{person}
-                    <button type="button" onClick={() => removeTripParticipant(person)} aria-label={`Remove ${person}`}>×</button>
-                  </span>
+                {tripParticipants.map(person => (
+                  <span className="participant-chip" key={person}>{person}</span>
                 ))}
               </div>
-              <form className="participant-form" onSubmit={addTripParticipant}>
-                <input value={newParticipantName} onChange={event => setNewParticipantName(event.target.value)} placeholder="Add a name" maxLength={60} />
-                <button className="btn btn-primary" type="submit">Add participant</button>
-              </form>
+              {isAddingParticipant && (
+                <form className="participant-form" onSubmit={addTripParticipant}>
+                  <input autoFocus value={newParticipantName} onChange={event => setNewParticipantName(event.target.value)} placeholder="Name" maxLength={60} />
+                  <button className="btn btn-primary" type="submit">Add</button>
+                  <button className="participant-cancel-button" type="button" onClick={() => { setNewParticipantName(''); setIsAddingParticipant(false); }}>Cancel</button>
+                </form>
+              )}
+              {isRemovingParticipant && (
+                <div className="participant-form participant-remove-form">
+                  <select value={participantToRemove} onChange={event => setParticipantToRemove(event.target.value)} aria-label="Participant to remove">
+                    {tripParticipants.map(person => <option key={person} value={person}>{person}</option>)}
+                  </select>
+                  <button className="participant-remove-confirm" type="button" onClick={() => removeTripParticipant(participantToRemove)}>Remove</button>
+                  <button className="participant-cancel-button" type="button" onClick={() => { setParticipantToRemove(''); setIsRemovingParticipant(false); }}>Cancel</button>
+                </div>
+              )}
             </section>
+
+            {!isTripManager(activeTrip) && (
+              <div className="leave-trip-row">
+                <span>You are a member of this trip.</span>
+                <button className="text-danger-button" type="button" onClick={leaveTrip}>Leave trip</button>
+              </div>
+            )}
+
+            {activeTrip.expenseStorageVersion !== 2 && isTripManager(activeTrip) && (
+              <section className="data-upgrade-card">
+                <div>
+                  <h2>Improve shared editing</h2>
+                  <p>Upgrade this trip so each receipt item saves independently. Existing receipts stay exactly the same.</p>
+                </div>
+                <button className="btn btn-primary" type="button" onClick={upgradeTripExpenses} disabled={isUpgradingExpenses}>
+                  {isUpgradingExpenses ? 'Upgrading…' : 'Upgrade trip'}
+                </button>
+              </section>
+            )}
           </div>
 
           <div className="layout-grid">
@@ -1033,8 +1529,9 @@ function App() {
                 {tripLocations.map(loc => {
                   const coverImage = activeTrip.receiptCovers?.[loc] || activeTrip.receiptImages?.[loc];
                   const coverSettings = activeTrip.receiptCoverSettings?.[loc] || { positionX: 50, positionY: 50, zoom: 1 };
+                  const cardColor = activeTrip.receiptColors?.[loc] || receiptColorOptions[0].value;
                   return (
-                    <div key={loc} className={`folder-card receipt-tile${coverImage ? ' has-cover' : ''}`} onClick={() => openLocationTab(loc)}>
+                    <div key={loc} className={`folder-card receipt-tile${coverImage ? ' has-cover' : ''}`} style={!coverImage ? { backgroundColor: cardColor } : {}} onClick={() => openLocationTab(loc)}>
                       {coverImage && <img className="receipt-tile-cover" src={coverImage} alt="" style={{ objectPosition: `${coverSettings.positionX}% ${coverSettings.positionY}%`, transform: `scale(${coverSettings.zoom})`, transformOrigin: `${coverSettings.positionX}% ${coverSettings.positionY}%` }} />}
                       <div className="receipt-tile-content">
                         <span className="receipt-tile-icon">🧾</span>
@@ -1044,6 +1541,28 @@ function App() {
                         <input type="file" accept="image/*" onChange={event => openReceiptCoverEditor(event, loc)} />
                         {coverUploads[loc] ? 'Uploading…' : coverImage ? 'Change cover' : 'Add cover'}
                       </label>
+                      {activeTrip.receiptCovers?.[loc] && (
+                        <button className="cover-remove-button receipt-cover-remove" type="button" onClick={event => { event.stopPropagation(); removeReceiptCover(loc); }}>Remove cover</button>
+                      )}
+                      {!coverImage && (
+                        <div className="receipt-color-select" role="group" aria-label={`Card color for ${loc}`} onClick={event => event.stopPropagation()}>
+                          <span>Color</span>
+                          <div className="receipt-color-swatches">
+                            {receiptColorOptions.map(option => (
+                              <button
+                                key={option.value}
+                                type="button"
+                                className={`receipt-color-swatch${cardColor === option.value ? ' is-selected' : ''}`}
+                                style={{ backgroundColor: option.value }}
+                                onClick={() => updateReceiptColor(loc, option.value)}
+                                aria-label={`Use ${option.label.toLowerCase()} card color`}
+                                aria-pressed={cardColor === option.value}
+                                title={option.label}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )
                 })}
@@ -1055,105 +1574,89 @@ function App() {
               <div className="card">
                 <h2 style={{ marginTop: 0 }}>Final Settlement</h2>
                 <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Calculates net debts across ALL receipts.</p>
-                <button className="btn btn-primary" onClick={calculateTripSettlement} disabled={isLoading || activeTrip.expenses.length === 0}>
+                <button className="btn btn-primary" onClick={calculateTripSettlement} disabled={isLoading || tripExpenses.length === 0}>
                   {isLoading ? 'Calculating...' : 'Calculate Who Owes Who'}
                 </button>
               </div>
 
-              {/* --- GROUPED & INTERACTIVE SETTLEMENTS UI --- */}
-              {results.length > 0 && (
+              {hasCalculated && (
                 <div className="card settlement-card" style={{ padding: '24px' }}>
                   <h2 style={{ marginTop: 0, color: 'var(--success)', marginBottom: '20px' }}>Final Settlements</h2>
-                  <div style={{ display: 'grid', gap: '20px', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }}>
-                    {Object.entries(
-                      results.reduce((acc, line) => {
-                        const match = line.match(/^(.*?)\s+owes\s+(.*?)\s+\$?(\d+(?:\.\d{1,2})?)/i);
-                        if (match) {
-                          const debtor = match[1];
-                          const creditor = match[2];
-                          const amount = match[3];
-                          if (!acc[creditor]) acc[creditor] = [];
-                          acc[creditor].push({ debtor, amount, line });
-                        } else {
-                          if (!acc['Other']) acc['Other'] = [];
-                          acc['Other'].push({ line });
-                        }
-                        return acc;
-                      }, {})
-                    ).map(([creditorName, debts]) => (
+                  {results.length === 0 ? (
+                    <p className="settled-empty-state">Everyone is settled up. No payments are needed.</p>
+                  ) : (
+                    <div style={{ display: 'grid', gap: '20px', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }}>
+                    {Object.entries(results.reduce((groups, settlement) => {
+                      if (!groups[settlement.creditor]) groups[settlement.creditor] = [];
+                      groups[settlement.creditor].push(settlement);
+                      return groups;
+                    }, {})).map(([creditorName, debts]) => (
                       <div key={creditorName} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid var(--glass-border)', borderRadius: '16px', padding: '16px' }}>
                         <h3 style={{ marginTop: 0, marginBottom: '16px', color: 'var(--success)', borderBottom: '1px solid var(--glass-border)', paddingBottom: '12px', fontSize: '1.1rem' }}>
-                          {creditorName === 'Other' ? 'Other' : `Owed to ${creditorName}:`}
+                          Owed to {creditorName}
                         </h3>
 
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                          {debts.map((debt, idx) => {
-                            const isSettled = activeTrip.settledDebts?.includes(debt.line);
+                          {debts.map((debt) => {
+                            const isSettled = activeTrip.settledDebts?.includes(debt.id) || activeTrip.settledDebts?.includes(debt.legacyLine);
 
                             return (
-                              <div key={idx} style={{
+                              <div key={debt.id} style={{
                                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                                 opacity: isSettled ? 0.4 : 1, transition: 'opacity 0.2s'
                               }}>
-                                {debt.debtor ? (
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1 }}>
-                                    <button
-                                      onClick={() => toggleSettlement(debt.line)}
-                                      title={isSettled ? "Mark as unpaid" : "Mark as paid"}
-                                      style={{
-                                        background: isSettled ? 'var(--success)' : 'transparent',
-                                        border: '1px solid var(--success)',
-                                        color: isSettled ? 'white' : 'var(--success)',
-                                        borderRadius: '50%', width: '24px', height: '24px',
-                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                        cursor: 'pointer', fontSize: '0.8rem', flexShrink: 0
-                                      }}
-                                    >
-                                      {isSettled ? '✓' : ''}
-                                    </button>
-                                    <span style={{ color: 'var(--text-main)', textDecoration: isSettled ? 'line-through' : 'none' }}>
-                                      {debt.debtor}
-                                    </span>
-                                  </div>
-                                ) : (
-                                  <span style={{ color: 'var(--text-muted)' }}>{debt.line}</span>
-                                )}
-
-                                {debt.amount && (
-                                  <span style={{ color: 'var(--success)', fontWeight: 'bold', textDecoration: isSettled ? 'line-through' : 'none' }}>
-                                    +${parseFloat(debt.amount).toFixed(2)}
-                                  </span>
-                                )}
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1 }}>
+                                  <button
+                                    onClick={() => toggleSettlement(debt)}
+                                    title={isSettled ? "Mark as unpaid" : "Mark as paid"}
+                                    aria-label={`${isSettled ? 'Mark unpaid' : 'Mark paid'}: ${debt.debtor} owes ${debt.creditor} $${debt.amount.toFixed(2)}`}
+                                    style={{
+                                      background: isSettled ? 'var(--success)' : 'transparent',
+                                      border: '1px solid var(--success)',
+                                      color: isSettled ? 'white' : 'var(--success)',
+                                      borderRadius: '50%', width: '24px', height: '24px',
+                                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                      cursor: 'pointer', fontSize: '0.8rem', flexShrink: 0
+                                    }}
+                                  >{isSettled ? '✓' : ''}</button>
+                                  <span style={{ color: 'var(--text-main)', textDecoration: isSettled ? 'line-through' : 'none' }}>{debt.debtor}</span>
+                                </div>
+                                <span style={{ color: 'var(--success)', fontWeight: 'bold', textDecoration: isSettled ? 'line-through' : 'none' }}>${debt.amount.toFixed(2)}</span>
                               </div>
                             );
                           })}
                         </div>
                       </div>
                     ))}
-                  </div>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {activeTrip.expenses.length > 0 && (
+              {tripExpenses.length > 0 && (
                 <div style={{ marginTop: '30px' }}>
                   <h3 style={{ marginBottom: '15px', paddingLeft: '10px' }}>Total Trip Breakdown</h3>
                   <div className="breakdown-grid">
-                    {Object.entries(getBreakdown(activeTrip.expenses)).map(([person, data]) => (
-                      <div key={person} className="spreadsheet-card">
-                        <div className="spreadsheet-header">{person}</div>
-                        <div className="spreadsheet-body">
-                          {data.items.map((i, idx) => (
-                            <div key={idx} className="line-item"><span>{i.name} <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>({i.location})</span></span><span>{i.cost.toFixed(2)}</span></div>
-                          ))}
+                    {Object.entries(getBreakdown(tripExpenses)).map(([person, data]) => {
+                      const breakdownKey = `trip:${person}`;
+                      const isCollapsed = collapsedBreakdowns[breakdownKey];
+                      return (
+                        <div key={person} className={`spreadsheet-card${isCollapsed ? ' is-collapsed' : ''}`}>
+                          <button className="spreadsheet-header breakdown-toggle" type="button" onClick={() => toggleBreakdown(breakdownKey)} aria-expanded={!isCollapsed}>
+                            <span>{person}</span><span aria-hidden="true">{isCollapsed ? '⌄' : '⌃'}</span>
+                          </button>
+                          {!isCollapsed && <div className="spreadsheet-body">
+                            {data.items.map((i, idx) => (
+                              <div key={idx} className="line-item"><span>{i.name} <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>({i.location})</span></span><span>{i.cost.toFixed(2)}</span></div>
+                            ))}
+                          </div>}
+                          <div className="spreadsheet-footer">
+                            <div className="summary-row"><span>Subtotal</span><span>{data.subtotal.toFixed(2)}</span></div>
+                            <div className="grand-total-row"><span>TOTAL</span><span>${data.grandTotal.toFixed(2)}</span></div>
+                          </div>
                         </div>
-                        <div className="spreadsheet-footer">
-                          <div className="summary-row"><span>Subtotal</span><span>{data.subtotal.toFixed(2)}</span></div>
-                          <div className="summary-row"><span>Tax</span><span>{data.tax.toFixed(2)}</span></div>
-                          <div className="summary-row"><span>Tip</span><span>{data.tip.toFixed(2)}</span></div>
-                          <div className="grand-total-row"><span>TOTAL</span><span>${data.grandTotal.toFixed(2)}</span></div>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -1166,19 +1669,24 @@ function App() {
       {view === 'receipt_detail' && activeLocation && (
         <div className="container print-container">
           <div className="no-print">
-            <button className="back-btn" onClick={() => setView('trip_view')} style={{ marginBottom: '20px' }}>← Back to Trip</button>
+            <button className="back-btn" onClick={() => setView('trip_view')} style={{ marginBottom: '12px' }}>← Back to Trip</button>
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+          <div className="receipt-detail-heading">
             <h1 className="header-title" style={{ margin: 0 }}>{activeLocation} <span className="no-print" style={{ fontSize: '0.5em', opacity: 0.5 }}>Receipt</span></h1>
+            <aside className="receipt-spend-summary" aria-label="Receipt spending summary">
+              <span>Receipt total</span>
+              <strong>${receiptTotal.toFixed(2)}</strong>
+              <small>{locationExpenses.length} item{locationExpenses.length === 1 ? '' : 's'}</small>
+            </aside>
           </div>
 
           <div className="action-bar no-print">
             <button className="btn-action btn-edit" onClick={() => loadReceiptBatch(activeLocation)}><span>✎</span> Edit / Add Items</button>
             <button className="btn-action btn-pdf" onClick={printReceipt}><span>📄</span> Save as PDF</button>
             <label className="btn-action btn-upload">
-              <span>📷</span> Upload Photo
-              <input type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => handleReceiptImageUpload(e, activeLocation)} />
+              <span>📷</span> {receiptImageUploads[activeLocation] ? 'Uploading…' : 'Upload Photo'}
+              <input type="file" accept="image/*" style={{ display: 'none' }} disabled={receiptImageUploads[activeLocation]} onChange={(e) => handleReceiptImageUpload(e, activeLocation)} />
             </label>
             {activeTrip.receiptImages?.[activeLocation] && (
               <button className="btn-action btn-remove-photo" onClick={() => removeReceiptImage(activeLocation)}><span>×</span> Remove Photo</button>
@@ -1186,8 +1694,8 @@ function App() {
           </div>
 
           {activeTrip.receiptImages && activeTrip.receiptImages[activeLocation] && (
-            <div style={{ marginBottom: '20px', borderRadius: '12px', overflow: 'hidden', border: '1px solid var(--glass-border)', boxShadow: '0 10px 30px rgba(0,0,0,0.3)' }}>
-              <img src={activeTrip.receiptImages[activeLocation]} alt="Receipt" style={{ width: '100%', maxHeight: '400px', objectFit: 'contain', background: 'rgba(0,0,0,0.2)', display: 'block' }} />
+            <div className="receipt-photo-preview">
+              <img src={activeTrip.receiptImages[activeLocation]} alt="Receipt" />
             </div>
           )}
 
@@ -1219,22 +1727,26 @@ function App() {
             <div>
               <h3 style={{ marginTop: 0, marginBottom: '15px', paddingLeft: '10px' }}>Split Breakdown</h3>
               <div className="breakdown-grid">
-                {Object.entries(getBreakdown(locationExpenses)).map(([person, data]) => (
-                  <div key={person} className="spreadsheet-card">
-                    <div className="spreadsheet-header">{person}</div>
-                    <div className="spreadsheet-body">
-                      {data.items.map((i, idx) => (
-                        <div key={idx} className="line-item"><span>{i.name}</span><span>{i.cost.toFixed(2)}</span></div>
-                      ))}
+                {Object.entries(getBreakdown(locationExpenses)).map(([person, data]) => {
+                  const breakdownKey = `receipt:${activeLocation}:${person}`;
+                  const isCollapsed = collapsedBreakdowns[breakdownKey];
+                  return (
+                    <div key={person} className={`spreadsheet-card${isCollapsed ? ' is-collapsed' : ''}`}>
+                      <button className="spreadsheet-header breakdown-toggle" type="button" onClick={() => toggleBreakdown(breakdownKey)} aria-expanded={!isCollapsed}>
+                        <span>{person}</span><span aria-hidden="true">{isCollapsed ? '⌄' : '⌃'}</span>
+                      </button>
+                      {!isCollapsed && <div className="spreadsheet-body">
+                        {data.items.map((i, idx) => (
+                          <div key={idx} className="line-item"><span>{i.name}</span><span>{i.cost.toFixed(2)}</span></div>
+                        ))}
+                      </div>}
+                      <div className="spreadsheet-footer">
+                        <div className="summary-row"><span>Subtotal</span><span>{data.subtotal.toFixed(2)}</span></div>
+                        <div className="grand-total-row"><span>TOTAL</span><span>${data.grandTotal.toFixed(2)}</span></div>
+                      </div>
                     </div>
-                    <div className="spreadsheet-footer">
-                      <div className="summary-row"><span>Subtotal</span><span>{data.subtotal.toFixed(2)}</span></div>
-                      <div className="summary-row"><span>Tax</span><span>{data.tax.toFixed(2)}</span></div>
-                      <div className="summary-row"><span>Tip</span><span>{data.tip.toFixed(2)}</span></div>
-                      <div className="grand-total-row"><span>TOTAL</span><span>${data.grandTotal.toFixed(2)}</span></div>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -1270,14 +1782,11 @@ function App() {
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
                   {allAvailablePeople.map(person => {
                     const isSelected = selectedConsumers.includes(person);
-                    const isNewAddition = sessionPeople.includes(person); // Check if this is a newly added name
 
                     return (
                       <div
                         key={person}
                         onClick={() => toggleConsumer(person)}
-                        onMouseEnter={() => setHoveredChip(person)}
-                        onMouseLeave={() => setHoveredChip(null)}
                         style={{
                           display: 'flex', alignItems: 'center', gap: '8px',
                           padding: '8px 14px', borderRadius: '20px',
@@ -1288,40 +1797,9 @@ function App() {
                         }}
                       >
                         {person}
-
-                        {/* ONLY show the X if it's hovered AND it's a newly added name */}
-                        {isNewAddition && hoveredChip === person && (
-                          <div
-                            onClick={(e) => {
-                              e.stopPropagation(); // Prevents the chip from toggling when clicking the X
-                              setSessionPeople(sessionPeople.filter(n => n !== person));
-                              setSelectedConsumers(selectedConsumers.filter(n => n !== person));
-                              setHoveredChip(null);
-                            }}
-                            style={{
-                              background: 'rgba(0,0,0,0.3)',
-                              borderRadius: '50%',
-                              width: '18px', height: '18px',
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              fontSize: '0.65rem', color: '#fff'
-                            }}
-                            title="Remove typo"
-                          >
-                            ✕
-                          </div>
-                        )}
                       </div>
                     );
                   })}
-                </div>
-                <div style={{ display: 'flex', gap: '10px' }}>
-                  <input
-                    placeholder="Type a new name..." value={newPersonName}
-                    onChange={e => setNewPersonName(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddNewPerson(e); } }}
-                    style={{ padding: '10px', fontSize: '0.9rem' }}
-                  />
-                  <button className="btn btn-primary" style={{ padding: '10px 16px', width: 'auto', fontSize: '0.9rem', borderRadius: '8px' }} onClick={handleAddNewPerson}>Add</button>
                 </div>
               </div>
 
@@ -1380,6 +1858,7 @@ function App() {
           </div>
         </div>
       )}
+      <ConfirmationDialog confirmation={confirmation} onCancel={closeConfirmation} onConfirm={confirmAction} />
     </div>
   );
 }
