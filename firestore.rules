@@ -8,11 +8,14 @@ service cloud.firestore {
       }
 
       function isMember() {
-        return signedIn() && request.auth.uid in resource.data.members;
+        return signedIn()
+          && resource.data.keys().hasAll(['members'])
+          && request.auth.uid in resource.data.members;
       }
 
       function isManager() {
         return signedIn()
+          && resource.data.keys().hasAll(['ownerId', 'admins'])
           && (
             resource.data.ownerId == request.auth.uid
             || request.auth.uid in resource.data.admins
@@ -141,6 +144,9 @@ service cloud.firestore {
     match /shared_trips/{tripId}/expenses/{expenseId} {
       function isTripMember() {
         return request.auth != null
+          && firestore.get(
+            /databases/$(database)/documents/shared_trips/$(tripId)
+          ).data.keys().hasAll(['members'])
           && request.auth.uid in firestore.get(
             /databases/$(database)/documents/shared_trips/$(tripId)
           ).data.members;

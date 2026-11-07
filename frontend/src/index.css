@@ -49,3 +49,6 @@ body {
   letter-spacing: .08em;
   text-transform: uppercase;
 }
+
+/* Include padding and borders in layout widths, including full-width controls. */
+*, *::before, *::after { box-sizing: border-box; }

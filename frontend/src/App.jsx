@@ -1585,7 +1585,7 @@ function App() {
                   {results.length === 0 ? (
                     <p className="settled-empty-state">Everyone is settled up. No payments are needed.</p>
                   ) : (
-                    <div style={{ display: 'grid', gap: '20px', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }}>
+                    <div className="settlement-grid">
                     {Object.entries(results.reduce((groups, settlement) => {
                       if (!groups[settlement.creditor]) groups[settlement.creditor] = [];
                       groups[settlement.creditor].push(settlement);
@@ -1771,7 +1771,7 @@ function App() {
             <datalist id="trip-participants">{allAvailablePeople.map(person => <option key={person} value={person} />)}</datalist>
 
             <div style={{ background: 'rgba(255,255,255,0.05)', padding: '20px', borderRadius: '16px', marginBottom: '20px', border: editingIndex !== null ? '1px solid var(--success)' : '1px solid var(--glass-border)' }}>
-              <div className="input-row" style={{ display: 'flex', gap: '10px' }}>
+              <div className="input-row receipt-item-fields" style={{ display: 'flex', gap: '10px' }}>
                 <div style={{ flex: 0.8 }}><label style={{ fontSize: '0.7rem' }}>Qty</label><input type="number" value={quantity} onChange={e => setQuantity(e.target.value)} style={{ textAlign: 'center' }} /></div>
                 <div style={{ flex: 2 }}><label style={{ fontSize: '0.7rem' }}>Item</label><input placeholder="Item Name" value={itemName} onChange={e => setItemName(e.target.value)} /></div>
                 <div style={{ flex: 1.2 }}><label style={{ fontSize: '0.7rem' }}>Price</label><input type="number" placeholder="0.00" value={unitPrice} onChange={e => setUnitPrice(e.target.value)} /></div>
