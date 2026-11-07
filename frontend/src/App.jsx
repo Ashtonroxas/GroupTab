@@ -240,6 +240,15 @@ function App() {
     ? [...new Set(tripExpenses.map(e => e.location))]
     : []
   const tripTotal = tripExpenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
+  const receiptTaxTotal = locationExpenses.reduce((sum, expense) => sum + (Number(expense.taxShare) || 0), 0);
+  const receiptTipTotal = locationExpenses.reduce((sum, expense) => sum + (Number(expense.tipShare) || 0), 0);
+  const receiptSubtotalTotal = locationExpenses.reduce((sum, expense) => {
+    const amount = Number(expense.amount) || 0;
+    const tax = Number(expense.taxShare) || 0;
+    const tip = Number(expense.tipShare) || 0;
+    const savedSubtotal = Number(expense.originalPrice);
+    return sum + (Number.isFinite(savedSubtotal) ? savedSubtotal : Math.max(0, amount - tax - tip));
+  }, 0);
   const receiptTotal = locationExpenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
   const getReceiptCount = (trip) => Number.isInteger(trip.receiptCount)
     ? trip.receiptCount
@@ -1169,10 +1178,15 @@ function App() {
       const involvedPeople = normalizePeople(exp.involved)
       const numPeople = involvedPeople.length
       if (numPeople === 0) return
-      const splitPrice = exp.originalPrice / numPeople
-      const splitTax = exp.taxShare / numPeople
-      const splitTip = exp.tipShare / numPeople
-      const splitTotal = exp.amount / numPeople
+      const amount = Number(exp.amount) || 0
+      const tax = Number(exp.taxShare) || 0
+      const tip = Number(exp.tipShare) || 0
+      const savedSubtotal = Number(exp.originalPrice)
+      const subtotal = Number.isFinite(savedSubtotal) ? savedSubtotal : Math.max(0, amount - tax - tip)
+      const splitPrice = subtotal / numPeople
+      const splitTax = tax / numPeople
+      const splitTip = tip / numPeople
+      const splitTotal = amount / numPeople
 
       let displayName = exp.item;
       if (exp.rawQty && exp.rawName) {
@@ -1638,6 +1652,8 @@ function App() {
                           </div>}
                           <div className="spreadsheet-footer">
                             <div className="summary-row"><span>Subtotal</span><span>{data.subtotal.toFixed(2)}</span></div>
+                            <div className="summary-row"><span>Tax</span><span>{data.tax.toFixed(2)}</span></div>
+                            <div className="summary-row"><span>Tip</span><span>{data.tip.toFixed(2)}</span></div>
                             <div className="grand-total-row"><span>TOTAL</span><span>${data.grandTotal.toFixed(2)}</span></div>
                           </div>
                         </div>
@@ -1661,8 +1677,10 @@ function App() {
           <div className="receipt-detail-heading">
             <h1 className="header-title" style={{ margin: 0 }}>{activeLocation} <span className="no-print" style={{ fontSize: '0.5em', opacity: 0.5 }}>Receipt</span></h1>
             <aside className="receipt-spend-summary" aria-label="Receipt spending summary">
-              <span>Receipt total</span>
-              <strong>${receiptTotal.toFixed(2)}</strong>
+              <div className="receipt-summary-row"><span>Subtotal</span><span>${receiptSubtotalTotal.toFixed(2)}</span></div>
+              <div className="receipt-summary-row"><span>Tax</span><span>${receiptTaxTotal.toFixed(2)}</span></div>
+              <div className="receipt-summary-row"><span>Tip</span><span>${receiptTipTotal.toFixed(2)}</span></div>
+              <div className="receipt-summary-total"><span>Total</span><strong>${receiptTotal.toFixed(2)}</strong></div>
               <small>{locationExpenses.length} item{locationExpenses.length === 1 ? '' : 's'}</small>
             </aside>
           </div>
@@ -1728,6 +1746,8 @@ function App() {
                       </div>}
                       <div className="spreadsheet-footer">
                         <div className="summary-row"><span>Subtotal</span><span>{data.subtotal.toFixed(2)}</span></div>
+                        <div className="summary-row"><span>Tax</span><span>{data.tax.toFixed(2)}</span></div>
+                        <div className="summary-row"><span>Tip</span><span>{data.tip.toFixed(2)}</span></div>
                         <div className="grand-total-row"><span>TOTAL</span><span>${data.grandTotal.toFixed(2)}</span></div>
                       </div>
                     </div>

@@ -243,7 +243,8 @@ input:focus { background: #111827; box-shadow: 0 0 0 3px rgba(37, 99, 235, .24);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  min-width: 148px;
+  gap: 4px;
+  min-width: 190px;
   padding: 9px 13px;
   text-align: right;
 }
@@ -251,6 +252,30 @@ input:focus { background: #111827; box-shadow: 0 0 0 3px rgba(37, 99, 235, .24);
 .receipt-spend-summary span,
 .receipt-spend-summary small { color: var(--text-muted); font-size: .72rem; }
 .receipt-spend-summary strong { color: #6ee7b7; font-size: 1.15rem; line-height: 1.2; margin: 2px 0; }
+
+.receipt-summary-row,
+.receipt-summary-total {
+  align-items: center;
+  display: flex;
+  gap: 24px;
+  justify-content: space-between;
+}
+
+.receipt-summary-row span:last-child {
+  color: var(--text-main);
+  font-variant-numeric: tabular-nums;
+}
+
+.receipt-summary-total {
+  border-top: 1px solid rgba(var(--success-rgb), .28);
+  margin-top: 3px;
+  padding-top: 5px;
+}
+
+.receipt-summary-total > span {
+  font-weight: 700;
+  text-transform: uppercase;
+}
 
 .receipt-photo-preview {
   background: rgba(0, 0, 0, .2);
