@@ -2,9 +2,8 @@ import { useState, useEffect } from 'react'
 import './App.css'
 
 // --- FIREBASE IMPORTS ---
-import { auth, googleProvider, db, storage } from './firebase'
+import { auth, googleProvider, db } from './firebase'
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
-import { deleteObject, getDownloadURL, ref, uploadBytes } from 'firebase/storage'
 import {
   doc,
   setDoc,
@@ -40,11 +39,33 @@ const receiptColorOptions = [
   { value: '#701a75', label: 'Purple' },
   { value: '#7f1d1d', label: 'Red' }
 ];
+const MAX_INLINE_IMAGE_CHARS = 260000;
+const MAX_TRIP_INLINE_IMAGE_CHARS = 800000;
+
+const inlineImageChars = (value) => (
+  typeof value === 'string' && value.includes('data:image/') ? value.length : 0
+);
+
+const getTripInlineImageChars = (trip) => (
+  inlineImageChars(trip?.tripCover)
+  + inlineImageChars(trip?.background)
+  + Object.values(trip?.receiptImages || {}).reduce((total, image) => total + inlineImageChars(image), 0)
+  + Object.values(trip?.receiptCovers || {}).reduce((total, image) => total + inlineImageChars(image), 0)
+);
+
+const ensureInlineImageFits = (trip, previousImage, nextImage) => {
+  if (nextImage.length > MAX_INLINE_IMAGE_CHARS) {
+    throw new Error('This image is still too large after compression.');
+  }
+  if (getTripInlineImageChars(trip) - inlineImageChars(previousImage) + nextImage.length > MAX_TRIP_INLINE_IMAGE_CHARS) {
+    throw new Error('This trip already has too many saved image bytes.');
+  }
+};
 
 // Legacy trip covers share a field with the removed AI backgrounds. Keep only
 // device-uploaded image data and deliberately ignore remote/generated URLs.
 const getUploadedTripCover = (trip) => {
-  if (typeof trip.tripCover === 'string' && trip.tripCover.startsWith('https://')) {
+  if (typeof trip.tripCover === 'string' && (trip.tripCover.startsWith('https://') || trip.tripCover.startsWith('data:image/'))) {
     return `url("${trip.tripCover}")`;
   }
   return typeof trip.background === 'string' && trip.background.startsWith('url(data:image/')
@@ -478,7 +499,7 @@ function App() {
     setView('receipt_editor');
   };
 
-  const prepareReceiptImage = (file, maxWidth = 1600) => {
+  const prepareReceiptImage = (file, maxWidth = 800) => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onerror = () => reject(new Error('The image could not be read.'));
@@ -501,9 +522,14 @@ function App() {
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img, 0, 0, width, height);
           canvas.toBlob((blob) => {
-            if (blob) resolve(blob);
+            if (blob) {
+              const compressedReader = new FileReader();
+              compressedReader.onerror = () => reject(new Error('The image could not be prepared.'));
+              compressedReader.onload = () => resolve(compressedReader.result);
+              compressedReader.readAsDataURL(blob);
+            }
             else reject(new Error('The image could not be prepared.'));
-          }, 'image/jpeg', 0.82);
+          }, 'image/jpeg', 0.7);
         };
         img.onerror = () => reject(new Error('The image could not be decoded.'));
       };
@@ -520,25 +546,18 @@ function App() {
 
     setReceiptImageUploads(current => ({ ...current, [location]: true }));
     try {
-      const imageBlob = await prepareReceiptImage(file);
-      const path = `shared_trips/${activeTripId}/receipt-photos/${encodeURIComponent(location)}/${Date.now()}.jpg`;
-      const imageRef = ref(storage, path);
-      await uploadBytes(imageRef, imageBlob, { contentType: 'image/jpeg' });
-      const imageUrl = await getDownloadURL(imageRef);
-      const previousPath = activeTrip.receiptImagePaths?.[location];
+      const imageDataUrl = await prepareReceiptImage(file);
+      ensureInlineImageFits(activeTrip, activeTrip.receiptImages?.[location], imageDataUrl);
+      const updatedPaths = { ...(activeTrip.receiptImagePaths || {}) };
+      delete updatedPaths[location];
       const saved = await updateTripInCloud(activeTripId, {
-        receiptImages: { ...(activeTrip.receiptImages || {}), [location]: imageUrl },
-        receiptImagePaths: { ...(activeTrip.receiptImagePaths || {}), [location]: path }
+        receiptImages: { ...(activeTrip.receiptImages || {}), [location]: imageDataUrl },
+        receiptImagePaths: updatedPaths
       });
-      if (!saved) {
-        await deleteObject(imageRef).catch(() => {});
-        return;
-      }
-      if (previousPath) await deleteObject(ref(storage, previousPath)).catch((error) => console.warn('Previous receipt photo could not be removed:', error));
-      showNotice('Receipt photo uploaded.', 'success');
+      if (saved) showNotice('Receipt photo uploaded.', 'success');
     } catch (err) {
       console.error("Image upload error:", err);
-      showNotice('We could not upload that photo. Please choose another image and try again.', 'error');
+      showNotice('We could not save that photo. Choose a smaller image or remove another saved photo from this trip.', 'error');
     } finally {
       setReceiptImageUploads(current => ({ ...current, [location]: false }));
     }
@@ -553,7 +572,6 @@ function App() {
       onConfirm: async () => {
         const updatedImages = { ...(activeTrip.receiptImages || {}) };
         const updatedPaths = { ...(activeTrip.receiptImagePaths || {}) };
-        const imagePath = updatedPaths[location];
         delete updatedImages[location];
         delete updatedPaths[location];
         try {
@@ -562,7 +580,6 @@ function App() {
             receiptImagePaths: updatedPaths,
             lastUpdated: new Date()
           });
-          if (imagePath) await deleteObject(ref(storage, imagePath)).catch((error) => console.warn('Receipt photo file could not be removed:', error));
           showNotice('Receipt photo removed.', 'success');
         } catch (err) {
           console.error('Receipt photo removal failed:', err);
@@ -592,21 +609,17 @@ function App() {
 
     setTripCoverUploads(current => ({ ...current, [trip.id]: true }));
     try {
-      const path = `shared_trips/${trip.id}/trip-covers/${Date.now()}`;
-      const fileRef = ref(storage, path);
-      await uploadBytes(fileRef, file, { contentType: file.type });
-      const coverUrl = await getDownloadURL(fileRef);
-      const previousPath = trip.tripCoverPath;
+      const coverDataUrl = await prepareReceiptImage(file);
+      ensureInlineImageFits(trip, trip.tripCover, coverDataUrl);
       await updateDoc(doc(db, 'shared_trips', trip.id), {
-        tripCover: coverUrl,
-        tripCoverPath: path,
+        tripCover: coverDataUrl,
+        tripCoverPath: '',
         lastUpdated: new Date()
       });
-      if (previousPath) await deleteObject(ref(storage, previousPath)).catch((error) => console.warn('Previous trip cover could not be removed:', error));
       showNotice('Trip cover updated.', 'success');
     } catch (err) {
       console.error('Trip cover upload failed:', err);
-      showNotice('We could not upload that cover. Please try again.', 'error');
+      showNotice('We could not save that cover. Choose a smaller image or remove another saved photo from this trip.', 'error');
     } finally {
       setTripCoverUploads(current => ({ ...current, [trip.id]: false }));
     }
@@ -626,7 +639,6 @@ function App() {
             background: null,
             lastUpdated: new Date()
           });
-          if (trip.tripCoverPath) await deleteObject(ref(storage, trip.tripCoverPath)).catch((error) => console.warn('Trip cover file could not be removed:', error));
           showNotice('Trip cover removed.', 'success');
         } catch (error) {
           console.error('Trip cover removal failed:', error);
@@ -663,23 +675,21 @@ function App() {
 
     setCoverUploads(current => ({ ...current, [location]: true }));
     try {
-      const path = `shared_trips/${activeTripId}/receipt-covers/${encodeURIComponent(location)}/${Date.now()}`;
-      const fileRef = ref(storage, path);
-      await uploadBytes(fileRef, file, { contentType: file.type });
-      const coverUrl = await getDownloadURL(fileRef);
-      const previousPath = activeTrip.receiptCoverPaths?.[location];
+      const coverDataUrl = await prepareReceiptImage(file);
+      ensureInlineImageFits(activeTrip, activeTrip.receiptCovers?.[location], coverDataUrl);
+      const updatedPaths = { ...(activeTrip.receiptCoverPaths || {}) };
+      delete updatedPaths[location];
       await updateDoc(doc(db, 'shared_trips', activeTripId), {
-        receiptCovers: { ...(activeTrip.receiptCovers || {}), [location]: coverUrl },
-        receiptCoverPaths: { ...(activeTrip.receiptCoverPaths || {}), [location]: path },
+        receiptCovers: { ...(activeTrip.receiptCovers || {}), [location]: coverDataUrl },
+        receiptCoverPaths: updatedPaths,
         receiptCoverSettings: { ...(activeTrip.receiptCoverSettings || {}), [location]: coverCrop },
         lastUpdated: new Date()
       });
-      if (previousPath) await deleteObject(ref(storage, previousPath)).catch((error) => console.warn('Previous receipt cover could not be removed:', error));
       closeCoverEditor();
       showNotice('Receipt cover updated.', 'success');
     } catch (err) {
       console.error('Receipt cover upload failed:', err);
-      showNotice('We could not upload that cover. Please try again.', 'error');
+      showNotice('We could not save that cover. Choose a smaller image or remove another saved photo from this trip.', 'error');
     } finally {
       setCoverUploads(current => ({ ...current, [location]: false }));
     }
@@ -695,7 +705,6 @@ function App() {
         const updatedCovers = { ...(activeTrip.receiptCovers || {}) };
         const updatedPaths = { ...(activeTrip.receiptCoverPaths || {}) };
         const updatedSettings = { ...(activeTrip.receiptCoverSettings || {}) };
-        const previousPath = updatedPaths[location];
         delete updatedCovers[location];
         delete updatedPaths[location];
         delete updatedSettings[location];
@@ -706,7 +715,6 @@ function App() {
             receiptCoverSettings: updatedSettings,
             lastUpdated: new Date()
           });
-          if (previousPath) await deleteObject(ref(storage, previousPath)).catch((error) => console.warn('Receipt cover file could not be removed:', error));
           showNotice('Receipt cover removed.', 'success');
         } catch (error) {
           console.error('Receipt cover removal failed:', error);

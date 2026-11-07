@@ -1,14 +1,12 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider, setPersistence, browserLocalPersistence } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
-import { getStorage } from "firebase/storage";
 
 // Validate required environment variables
 const requiredEnvVars = [
   'VITE_API_KEY',
   'VITE_AUTH_DOMAIN',
   'VITE_PROJECT_ID',
-  'VITE_STORAGE_BUCKET',
   'VITE_MESSAGING_SENDER_ID',
   'VITE_APP_ID'
 ];
@@ -33,20 +31,18 @@ const firebaseConfig = {
   apiKey: import.meta.env.VITE_API_KEY,
   authDomain: import.meta.env.VITE_AUTH_DOMAIN,
   projectId: import.meta.env.VITE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_STORAGE_BUCKET,
   messagingSenderId: import.meta.env.VITE_MESSAGING_SENDER_ID,
   appId: import.meta.env.VITE_APP_ID
 };
 
 // Initialize Firebase with error handling
-let app, auth, db, storage, googleProvider;
+let app, auth, db, googleProvider;
 
 if (!firebaseConfigurationError) {
   try {
     app = initializeApp(firebaseConfig);
     auth = getAuth(app);
     db = getFirestore(app);
-    storage = getStorage(app);
 
     googleProvider = new GoogleAuthProvider();
     googleProvider.addScope('profile');
@@ -61,4 +57,4 @@ if (!firebaseConfigurationError) {
   }
 }
 
-export { auth, googleProvider, db, storage, firebaseConfigurationError };
+export { auth, googleProvider, db, firebaseConfigurationError };
